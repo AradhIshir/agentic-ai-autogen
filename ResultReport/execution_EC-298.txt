@@ -1,0 +1,5 @@
+Execution Results for EC-298: 
+Total Tests: 2 
+Passed: 2 
+Failed: 0 
+No failed test details.

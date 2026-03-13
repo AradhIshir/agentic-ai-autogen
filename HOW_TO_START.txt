@@ -1,0 +1,43 @@
+================================================================================
+  HOW TO START THE QA TESTING APP (no coding experience needed)
+================================================================================
+
+STEP 1 — ONE-TIME SETUP (only do this once)
+--------------------------------------------
+1. Open Terminal (on Mac: press Command+Space, type "Terminal", press Enter).
+2. Copy and paste this line, then press Enter:
+
+   cd /Users/ishir/PycharmProjects/AgenticAIAutogen && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+
+3. Wait until it finishes (you'll see your cursor again). Then you can close Terminal if you want.
+
+
+STEP 2 — START THE APP (every time you want to use it)
+------------------------------------------------------
+Option A — Easiest: Double-click
+   • In Finder, go to the folder: AgenticAIAutogen
+   • Double-click the file: "Start QA App.command"
+   • A Terminal window will open and your browser will open the app. Leave the Terminal window open while you use the app.
+
+Option B — From Terminal
+   • Open Terminal
+   • Copy, paste, and press Enter:
+
+   cd /Users/ishir/PycharmProjects/AgenticAIAutogen && source .venv/bin/activate && streamlit run ui/app.py
+
+   • Your browser will open the app. Leave Terminal open.
+
+
+STEP 3 — USE THE APP
+--------------------
+• Run pipeline: Type your Jira ticket ID (e.g. EC-298), click "RUN FULL PIPELINE", wait until you see "Pipeline run finished".
+• Dashboard: In the left sidebar, click "Dashboard" to see all projects with Total US, test cases created, executed, passed, and failed.
+
+
+IF SOMETHING GOES WRONG
+-----------------------
+• "Permission denied" when double-clicking: Right-click "Start QA App.command" → Open (or open from Terminal once with: chmod +x "Start QA App.command").
+• App doesn't open in browser: Look at the Terminal window for a link like http://localhost:8501 and click it or type it in your browser.
+• "No module named ...": Run the one-time setup again (Step 1).
+
+================================================================================

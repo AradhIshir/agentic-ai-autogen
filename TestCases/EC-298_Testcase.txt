@@ -1,18 +1,13 @@
 Positive Test Cases:
-1. Verify that the login page displays Username, Password fields, and a Login button when navigating to https://www.saucedemo.com/
-2. Verify successful login with valid credentials ('standard_user', 'sauce') and redirection to /inventory.html
-3. Verify that the product list is visible after successful login.
-4. Verify that the login popup is dismissed when present.
+1. Successful login with valid credentials (standard_user / sauce) should redirect to inventory page.
 
 Negative Test Cases:
-1. Verify error message displayed for invalid credentials (e.g., 'invalid_user', 'wrong_password')
-2. Verify that user cannot log in with empty Username and Password fields.
-3. Verify that user cannot access /inventory.html directly without logging in.
+1. Failed login attempt with invalid username should display error message.
+2. Failed login attempt with invalid password should display error message.
+3. Attempting to login with empty fields should display error message.
 
 Boundary Test Cases:
-1. Verify login with maximum character limit in Username and Password fields.
-2. Verify login with single character for Username and Password.
+1. Enter maximum allowed characters for username and password fields.
 
 Edge Test Cases:
-1. Verify login with special characters in Username and Password fields.
-2. Verify that the application handles slow network conditions during login gracefully.
+1. Attempt to login after multiple failed attempts should lock the user.

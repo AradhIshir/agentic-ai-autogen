@@ -538,6 +538,8 @@ ALWAYS end with: AutomationAgent Completed
             """
 )
 
+        #termination = TextMessageTermination("TestDesigner Completed") | MaxMessageTermination(10)
+
         # Step mode: testcases | automation | execute | bugs | full (or unset = full)
         pipeline_step = (os.environ.get("PIPELINE_STEP") or "full").strip().lower()
         jira_id = os.environ.get("JIRA_TICKET_ID", "EC-298")
