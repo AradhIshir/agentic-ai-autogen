@@ -1,4 +1,29 @@
-.env		
+# Environment and secrets (do not commit)
+.env
+.env.*
+!.env.example
 
-.env
-.env
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+*.swp
+.DS_Store
+
+# Node (if used by MCP)
+node_modules/
+
+# Playwright
+test-results/
+playwright-report/
+.playwright/
+
+# Optional: keep if you want to track
+# ResultReport/
+# generated_testscript/
