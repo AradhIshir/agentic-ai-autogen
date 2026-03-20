@@ -1,7 +1,0 @@
-Test Execution Summary for EC-298:
-
-1. **Valid login**: Passed
-
-2. **Invalid login**: Passed
-
-All test cases executed successfully with no errors.

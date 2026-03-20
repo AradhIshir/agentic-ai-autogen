@@ -1,0 +1,69 @@
+APP_URL: https://www.saucedemo.com/
+
+Positive Test Cases:
+
+1. Test Case ID: EC-298-01
+   Title: Successful Login
+   Test Type: Positive
+   Preconditions: User is on the login page.
+   Test Data:
+   username: standard_user
+   password: secret_sauce
+   Steps:
+   1. Navigate to the application URL
+   2. Enter "standard_user" in the Username field
+   3. Enter "secret_sauce" in the Password field
+   4. Click the Login button
+   5. Verify user is redirected to the inventory page
+   Expected Result: User should successfully log in and see the product list.
+
+Negative Test Cases:
+
+1. Test Case ID: EC-298-02
+   Title: Login Failure with Invalid Password
+   Test Type: Negative
+   Preconditions: User is on the login page.
+   Test Data:
+   username: standard_user
+   password: wrong_password
+   Steps:
+   1. Navigate to the application URL
+   2. Enter "standard_user" in the Username field
+   3. Enter "wrong_password" in the Password field
+   4. Click the Login button
+   5. Verify the error message is displayed
+   Expected Result: User should see an error message indicating invalid credentials.
+
+Boundary Test Cases:
+
+1. Test Case ID: EC-298-03
+   Title: Login with Empty Username
+   Test Type: Boundary
+   Preconditions: User is on the login page.
+   Test Data:
+   username: 
+   password: secret_sauce
+   Steps:
+   1. Navigate to the application URL
+   2. Enter "" in the Username field
+   3. Enter "secret_sauce" in the Password field
+   4. Click the Login button
+   5. Verify the error message is displayed for empty Username
+   Expected Result: User should see an error message indicating that Username is required.
+
+Edge Test Cases:
+
+1. Test Case ID: EC-298-04
+   Title: Login with Special Characters in Username
+   Test Type: Edge
+   Preconditions: User is on the login page.
+   Test Data:
+   username: standard_user!@#
+   password: secret_sauce
+   Steps:
+   1. Navigate to the application URL
+   2. Enter "standard_user!@#" in the Username field
+   3. Enter "secret_sauce" in the Password field
+   4. Click the Login button
+   5. Verify the error message is displayed
+   Expected Result: User should see an error message indicating invalid username format.

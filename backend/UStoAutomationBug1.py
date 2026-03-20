@@ -6,7 +6,7 @@ import requests
 from dotenv import load_dotenv
 
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
-from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
+from autogen_agentchat.conditions import TextMessageTermination, MaxMessageTermination
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.ui import Console
 
@@ -17,7 +17,7 @@ load_dotenv()
 
 
 def _automation_project_root() -> str:
-    """Workspace root for filesystem MCP and ResultReport/TestCases mkdirs."""
+    """Workspace root exposed to the filesystem MCP (TestCases, ResultReport, generated_testscript)."""
     default = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
     env = (os.environ.get("AUTOMATION_PROJECT_ROOT") or "").strip()
     return env if env else default
@@ -88,52 +88,15 @@ async def main():
     print("Agent finished execution")
 
 
-async def _run_split_specialist_then_qalead_stop(
-    *,
-    specialist,
-    qalead_closer,
-    specialist_task: str,
-    completed_phrase: str,
-    jira_id: str,
-    step_label: str,
-) -> None:
-    """
-    Split pipeline steps: specialist alone until *Completed, then QALeadCloser outputs exact STOP.
-
-    IMPORTANT (autogen-agentchat): TextMessageTermination(arg) treats arg as *agent source name*, not message text.
-    Use TextMentionTermination(text, sources=[...]) so we match the completion phrase inside the message body.
-    sources= avoids the user task (which repeats the same phrases) ending the run before the specialist speaks.
-    """
-    team_work = RoundRobinGroupChat(
-        participants=[specialist],
-        termination_condition=TextMentionTermination(completed_phrase, sources=[specialist.name])
-        | MaxMessageTermination(120),
-    )
-    await Console(team_work.run_stream(task=specialist_task))
-
-    closer_task = (
-        f"Pipeline sub-step {step_label!r} for ticket {jira_id} is finished. "
-        f"Output exactly the three characters STOP and nothing else — no name, no colon, no period, no markdown, no newline."
-    )
-    team_stop = RoundRobinGroupChat(
-        participants=[qalead_closer],
-        termination_condition=TextMentionTermination("STOP", sources=[qalead_closer.name])
-        | MaxMessageTermination(8),
-    )
-    await Console(team_stop.run_stream(task=closer_task))
-
-
 async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
     """Run the QA pipeline. Email notifications are handled by webhook/server.py."""
     jira_id = os.environ.get("JIRA_TICKET_ID", "EC-298")
     pipeline_step = (os.environ.get("PIPELINE_STEP") or "full").strip().lower()
-    is_split = pipeline_step in ("testcases", "automation", "execute", "bugs")
 
-    # Dirs must exist so filesystem MCP write_file succeeds (paths relative to AUTOMATION_PROJECT_ROOT / repo root).
+    # ResultReport must exist so filesystem MCP write_file succeeds (BugCreator reads execution_*.json here).
     _project_root = _automation_project_root()
     os.makedirs(os.path.join(_project_root, "ResultReport"), exist_ok=True)
     os.makedirs(os.path.join(_project_root, "TestCases"), exist_ok=True)
-    os.makedirs(os.path.join(_project_root, "generated_testscript"), exist_ok=True)
 
     # QALead must NOT list agents that are absent from this run (causes wrong instructions, e.g. TestDesigner during bugs-only).
     if pipeline_step == "full":
@@ -145,9 +108,32 @@ async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
             4. Instruct BugCreator → Jira bugs → wait for "BugCreator Completed".
             5. Reply exactly: STOP
             """
-    elif is_split:
-        # Split steps use _run_split_specialist_then_qalead_stop; full QALead scope not used.
-        _qalead_scope = ""
+    elif pipeline_step == "testcases":
+        _qalead_scope = """
+            THIS RUN: only TestDesigner is in the chat. Instruct ONLY TestDesigner.
+            NEVER mention AutomationAgent, ExecutionAgent, or BugCreator.
+            """
+    elif pipeline_step == "automation":
+        _qalead_scope = """
+            THIS RUN: only AutomationAgent is in the chat. Instruct ONLY AutomationAgent.
+            NEVER mention TestDesigner, ExecutionAgent, or BugCreator.
+            """
+    elif pipeline_step == "execute":
+        _qalead_scope = """
+            THIS RUN: You and ExecutionAgent are in the chat (two speakers). Round-robin MUST end after STOP.
+            • Your 1st message: one short line only — tell ExecutionAgent to execute for this ticket (no tools).
+            • Do not send any other message until ExecutionAgent's reply contains the exact phrase: ExecutionAgent Completed
+            • Your 2nd and FINAL message: exactly STOP (nothing else). Never send STOP twice. Never speak after STOP.
+            NEVER mention TestDesigner, AutomationAgent, or BugCreator.
+            """
+    elif pipeline_step == "bugs":
+        _qalead_scope = """
+            THIS RUN: You and BugCreator are in the chat (two speakers). Round-robin MUST end after STOP.
+            • Your 1st message: one short line only — instruct BugCreator to analyze ResultReport and create Jira bugs for this ticket (no tools).
+            • Do not send any other message until BugCreator's reply contains the exact phrase: BugCreator Completed
+            • Your 2nd and FINAL message: exactly STOP (nothing else). Never send STOP twice. Never speak after STOP.
+            NEVER mention TestDesigner, AutomationAgent, or ExecutionAgent.
+            """
     else:
         _qalead_scope = f"""
             Unrecognized PIPELINE_STEP; follow the user task message only. (step={pipeline_step!r})
@@ -158,8 +144,7 @@ async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
             model_client=model_client,
             workbench=[jira_wb, fs_wb],
             system_message=f"""
-You are a QA Test Case Design expert. 
-Your goal is to produce DETAILED, automation-ready manual test cases that the AutomationAgent can reliably convert into Playwright scripts. Generate detailed manual test cases—never high-level validation statements only.
+You are a QA Test Case Design expert. Your goal is to produce DETAILED, automation-ready manual test cases that the AutomationAgent can reliably convert into Playwright scripts. Generate detailed manual test cases—never high-level validation statements only.
 
 ---
 WORKFLOW
@@ -172,53 +157,25 @@ Step 1: Call the tool `searchJiraIssuesUsingJql` with:
 
 Step 2: Read the description, acceptance criteria, and all comments in the User Story.
 
-Step 3: Generate all required test categories with full structure (see below). Write the output file using the filesystem MCP `write_file` tool.
+Step 3: Generate all required test categories with full structure (see below). Write the file using filesystem MCP `write_file` with path **exactly** `TestCases/{jira_id}_Testcase.txt` (relative to workspace root — no other folder or filename).
 
 ---
 REQUIRED TEST CASE STRUCTURE
 
-Every test case MUST contain these fields IN ORDER:
+Every test case MUST contain these fields:
 
-- Test Case ID (format: <JIRA>-TC-NNN e.g. {jira_id}-TC-001)
+- Test Case ID
 - Title
 - Test Type (exactly one of: Positive / Negative / Boundary / Edge)
-- Preconditions  (once at the **top** of the test case only — see PRECONDITIONS RULE)
-- Steps          (each step = action + **expected result for that step** only — see PER-STEP FORMAT)
-- Expected Result (one **summary** at the end of the test case after all steps — must match the last step’s outcome)
-
----
-PRECONDITIONS RULE (MANDATORY)
-
-Put **Preconditions** once per test case (before Steps). Add Just one line, Example: app is ready to test.
-
-Do NOT repeat preconditions under each step.
-
-
----
-PER-STEP FORMAT (MANDATORY)
-
-Under **Steps**, each step has **only**:
-1) The **action** (one UI action per step)
-2) The **expected result for that step** (what must be true immediately after that action — URL, element, text, error)
-
-Use this pattern for every step:
-
- <n>:
-  Action: <single UI action>
-  Expected result: <observable outcome after this action>
-- Test Data inside each step.
-
-    FORBIDDEN
-- Bare action lines with no **Expected result** for that step
-- Only a final Expected Result with no per-step expected results
-
-
-The **Expected Result** line at the end of the test case is still required as a short **summary** (should align with the last step’s Expected result).
+- Preconditions
+- Test Data
+- Steps
+- Expected Result
 
 ---
 STEP RULES (CRITICAL FOR AUTOMATION)
 
-Each **Action** MUST be a SINGLE UI action. Use only actions such as:
+Each step MUST represent a SINGLE UI action that can be automated. Use only actions such as:
 
 - Navigate to URL
 - Enter text in field
@@ -228,34 +185,26 @@ Each **Action** MUST be a SINGLE UI action. Use only actions such as:
 - Verify error message
 - Verify page navigation
 
-FORBIDDEN: Vague actions like "Validate login works" or "Check that the form works."
+FORBIDDEN: Vague statements like "Validate login works" or "Check that the form works."
 
-EXAMPLE (Preconditions + Test Data once at top; expected result **per step** only):
+REQUIRED: Explicit, one-action-per-step instructions. Example:
 
+1. Navigate to the application URL
+2. Enter "standard_user" in the Username field
+3. Enter "sauce" in the Password field
+4. Click the Login button
+5. Verify the user is redirected to the inventory page
+
+---
+TEST DATA (MANDATORY)
+
+Every test case MUST include explicit test data inputs. Use this format:
 
 Test Data:
 username: standard_user
-password: secret_sauce
+password: sauce
 
-Steps:
-
-Step 1:
-  Action: Navigate to the application URL (use APP_URL from file header only).
-  Expected result: Login page loads; username field, password field, and Login button are visible.
-
-Step 2:
-  Action: Enter "standard_user" in the Username field (use Test Data).
-  Expected result: Username field shows standard_user.
-
-Step 3:
-  Action: Enter "secret_sauce" in the Password field (use Test Data).
-  Expected result: Password field holds the value (masked).
-
-Step 4:
-  Action: Click the Login button.
-  Expected result: User is redirected to the inventory page; product list or inventory container is visible.
-
-Expected Result: User successfully logs in and sees the inventory page with products listed.
+(Adjust field names and values per test case; always list concrete values.)
 
 ---
 REQUIRED TEST CATEGORIES
@@ -286,11 +235,10 @@ Rules:
 ---
 FILE NAMING AND HANDLING
 
-- File path MUST be: TestCases/<JIRA_TICKET_ID>_Testcase.txt
-  Example: TestCases/EC-298_Testcase.txt
-- Always write files under the `TestCases` folder at the workspace root.
-- If the file already exists, you MUST OVERWRITE it (do not create numbered variants).
-- Use the filesystem MCP `write_file` tool to write or overwrite the file.
+- The `write_file` path argument MUST be exactly: `TestCases/{jira_id}_Testcase.txt`
+  (same ticket id as this run; underscore before `Testcase`, capital T).
+- Do not use `TestCases/<JIRA_TICKET_ID>_Testcase.txt` as a placeholder in the tool call — use the real path above.
+- If the file already exists, OVERWRITE it (no numbered variants).
 
 ---
 TOOL USAGE RULES (MANDATORY)
@@ -302,18 +250,16 @@ You must NOT:
 - generate automation scripts
 - generate JavaScript or Playwright code
 
-Your responsibility is ONLY to generate manual test cases. The only allowed output file location is:
+Your responsibility is ONLY to generate manual test cases. The only allowed output path for `write_file` is:
 
-TestCases/<JIRA_TICKET_ID>_Testcase.txt
+TestCases/{jira_id}_Testcase.txt
 
 ---
 FINAL RESPONSE
 
-When you have finished writing all test files, reply EXACTLY with (no other text):
+Only after `write_file` to `TestCases/{jira_id}_Testcase.txt` succeeds, reply EXACTLY with (no other text):
 
 TestDesigner Completed
-
-Never output STOP or Proceed — only QALead uses those.
 """
             )
 
@@ -387,7 +333,6 @@ Use the filesystem MCP write_file tool.
 Do NOT execute the scripts.
 
 ALWAYS end your response with exactly: AutomationAgent Completed
-Never output STOP or Proceed — only QALead uses those.
 """
     )
 
@@ -441,7 +386,6 @@ Never output STOP or Proceed — only QALead uses those.
 
         ## End
         After both files are written, send the exact phrase ExecutionAgent Completed **once** — do not repeat it in later turns.
-        Never output STOP or Proceed — only QALead uses those.
         """
     )
 
@@ -600,42 +544,24 @@ Never output STOP or Proceed — only QALead uses those.
             When processing of all execution reports is finished respond EXACTLY with:
             BugCreator Completed
             Do NOT include any additional text.
-            Never output STOP or Proceed — only QALead uses those.
         """
     )
 
-    _qalead_critical = """
-            ══════════════════════════════════════════════
-            CRITICAL RULE — FULL / GENERIC PIPELINE
-            ══════════════════════════════════════════════
-            The initial user TASK tells you which agents to instruct and when to reply STOP.
-            When the task says reply STOP — output exactly STOP with no other text (no name prefix, no colon, no period).
-            Do NOT send emails. Email notifications are handled externally.
-            ══════════════════════════════════════════════
-        """
-
-    QALeadCloser = None
-    QALead = None
-    if is_split:
-        QALeadCloser = AssistantAgent(
-            name="QALead",
-            model_client=model_client,
-            workbench=[],
-            system_message="""
-You are the QA pipeline closer. The specialist agent has already finished its sub-step.
-When the user says the sub-step is done, your entire reply must be exactly three letters: STOP
-No agent name, no colon, no period, no markdown, no spaces, no explanation — only STOP.
-""",
-        )
-    else:
-        QALead = AssistantAgent(
+    QALead = AssistantAgent(
             name="QALead",
             model_client=model_client,
             workbench=[],
             system_message=f"""
             You are the QA Lead supervising the testing automation workflow.
 
-            {_qalead_critical}
+            ══════════════════════════════════════════════
+            CRITICAL RULE — READ THIS FIRST
+            ══════════════════════════════════════════════
+            The initial user TASK message tells you EXACTLY which agent to instruct
+            and EXACTLY when to reply STOP. Follow that task and the scope below.
+            When the task says reply STOP — do so immediately with no other text.
+            Do NOT send emails. Email notifications are handled externally.
+            ══════════════════════════════════════════════
 
             SCOPE FOR THIS RUN (PIPELINE_STEP={pipeline_step}):
             {_qalead_scope}
@@ -643,71 +569,51 @@ No agent name, no colon, no period, no markdown, no spaces, no explanation — o
             Each agent must only perform their own responsibility.
             Agents must NOT perform each other's responsibilities.
 
-            """,
-        )
+            """
+    )
 
     if pipeline_step == "testcases":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=TestDesigner,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. Follow your system instructions: fetch from Jira, "
-                f"write_file TestCases/{jira_id}_Testcase.txt. "
-                f"When done, send one TextMessage whose content is exactly: TestDesigner Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="TestDesigner Completed",
-            jira_id=jira_id,
-            step_label="testcases",
+        task = (
+            f"Instruct TestDesigner to generate test cases for Jira ticket {jira_id}. "
+            f"When TestDesigner replies 'TestDesigner Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, TestDesigner]
 
     elif pipeline_step == "automation":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=AutomationAgent,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. Read TestCases/{jira_id}_Testcase.txt, "
-                f"write generated_testscript/Script_{jira_id}_.spec.ts. "
-                f"When done, send one TextMessage whose content is exactly: AutomationAgent Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="AutomationAgent Completed",
-            jira_id=jira_id,
-            step_label="automation",
+        task = (
+            f"Instruct AutomationAgent to generate Playwright scripts for Jira ticket {jira_id}. "
+            f"When AutomationAgent replies 'AutomationAgent Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, AutomationAgent]
 
     elif pipeline_step == "execute":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=ExecutionAgent,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. "
-                f"(1) read_file generated_testscript/Script_{jira_id}_.spec.ts "
-                f"(2) run each test() via Playwright MCP; first browser_* per test: browser_navigate(APP_URL from script) "
-                f"(3) write_file ResultReport/execution_{jira_id}.json "
-                f"(4) write_file ResultReport/result_{jira_id}.txt (summary) "
-                f"(5) if any test failed, browser_screenshot ResultReport/screenshot_{jira_id}.png "
-                f"(6) when done, send one TextMessage whose content is exactly: ExecutionAgent Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="ExecutionAgent Completed",
-            jira_id=jira_id,
-            step_label="execute",
+        # QALead + ExecutionAgent: single-agent round-robin never ends (same agent every turn → repeated "Completed").
+        task = (
+            f"QALead: First message — one line only, e.g. "
+            f"\"ExecutionAgent: run execution for {jira_id} per your system instructions.\" "
+            f"Then stay silent until ExecutionAgent's reply contains ExecutionAgent Completed. "
+            f"Then reply with exactly: STOP\n\n"
+            f"ExecutionAgent: Jira ticket {jira_id}. "
+            f"(1) read_file generated_testscript/Script_{jira_id}_.spec.ts "
+            f"(2) run each test() via Playwright MCP; first browser_* per test: browser_navigate(APP_URL from script) "
+            f"(3) write_file ResultReport/execution_{jira_id}.json "
+            f"(4) write_file ResultReport/result_{jira_id}.txt (summary) "
+            f"(5) if any test failed, browser_screenshot ResultReport/screenshot_{jira_id}.png "
+            f"(6) end with exactly: ExecutionAgent Completed (once only)"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(80)
+        participants = [QALead, ExecutionAgent]
 
     elif pipeline_step == "bugs":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=BugCreator,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. Analyze ResultReport and create Jira bugs per your instructions. "
-                f"When done, send one TextMessage whose content is exactly: BugCreator Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="BugCreator Completed",
-            jira_id=jira_id,
-            step_label="bugs",
+        task = (
+            f"Instruct BugCreator to analyze execution results in ResultReport and create Jira bugs "
+            f"for any failed tests for Jira ticket {jira_id}. "
+            f"When BugCreator replies 'BugCreator Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, BugCreator]
 
     else:
         task = (
@@ -715,17 +621,17 @@ No agent name, no colon, no period, no markdown, no spaces, no explanation — o
             f"TestDesigner → AutomationAgent → ExecutionAgent → BugCreator. "
             f"After all agents have finished, reply exactly: STOP"
         )
-        termination = TextMentionTermination("STOP", sources=["QALead"]) | MaxMessageTermination(120)
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(120)
         participants = [QALead, TestDesigner, AutomationAgent, ExecutionAgent, BugCreator]
 
-        team = RoundRobinGroupChat(
-            participants=participants,
-            termination_condition=termination
-        )
+    team = RoundRobinGroupChat(
+        participants=participants,
+        termination_condition=termination
+    )
 
-        await Console(
-            team.run_stream(task=task)
-        )
+    await Console(
+        team.run_stream(task=task)
+    )
 
     # If execute step ended without agent-written artifacts, BugCreator still needs a valid execution JSON.
     if pipeline_step == "execute":

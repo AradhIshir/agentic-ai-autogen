@@ -1,5 +1,8 @@
 {
   "projects": {
-    "EC": "Excellence board"
+    "EC": "Excellence Center",
+    "FAI": "FiresideAI",
+    "AL": "Alcon",
+    "BUR": "Burgess"
   }
 }

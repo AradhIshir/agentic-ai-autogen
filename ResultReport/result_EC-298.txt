@@ -1,6 +1,1 @@
-Jira Ticket ID: EC-298
-Total Tests: 2
-Passed Tests: 2
-Failed Tests: 0
-Failed Test Titles: 
-Error Messages: 
+Summary of Test Results for EC-298\n\nTotal Tests: 4\nPassed Tests: 2\nFailed Tests: 2\n\nFailed Test Details:\n1. Negative: EC-298-TC-002 — Unsuccessful Login with Invalid Credentials - Timeout waiting for error message to be visible.\n2. Edge: EC-298-TC-004 — Login with Empty Username and Valid Password - Expected 'Username is required' message was displayed.

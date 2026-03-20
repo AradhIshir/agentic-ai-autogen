@@ -6,7 +6,7 @@ import requests
 from dotenv import load_dotenv
 
 from autogen_agentchat.agents import AssistantAgent, UserProxyAgent
-from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
+from autogen_agentchat.conditions import TextMessageTermination, MaxMessageTermination
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.ui import Console
 
@@ -14,35 +14,6 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import StdioServerParams, McpWorkbench
 
 load_dotenv()
-
-
-def _automation_project_root() -> str:
-    """Workspace root for filesystem MCP and ResultReport/TestCases mkdirs."""
-    default = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-    env = (os.environ.get("AUTOMATION_PROJECT_ROOT") or "").strip()
-    return env if env else default
-
-
-def _playwright_mcp_server_params() -> StdioServerParams:
-    """Playwright MCP stdio server. Headless + isolated avoid common subprocess failures (no DISPLAY, profile lock)."""
-    args: list[str] = ["-y", "@playwright/mcp@latest"]
-    # Default headless=true so subprocess/webhook runs work without a GUI session.
-    _hl = os.environ.get("PLAYWRIGHT_MCP_HEADLESS", "true").strip().lower()
-    if _hl in ("1", "true", "yes", "on"):
-        args.append("--headless")
-    # Default isolated=true avoids "Browser is already in use for .../mcp-chrome" when another Playwright MCP
-    # (e.g. Cursor) or a previous run still holds the shared persistent profile under ~/Library/Caches/ms-playwright/.
-    _iso = os.environ.get("PLAYWRIGHT_MCP_ISOLATED", "true").strip().lower()
-    if _iso in ("1", "true", "yes", "on"):
-        args.append("--isolated")
-    _ns = os.environ.get("PLAYWRIGHT_MCP_NO_SANDBOX", "").strip().lower()
-    if _ns in ("1", "true", "yes", "on"):
-        args.append("--no-sandbox")
-    # Optional: chrome | firefox | webkit | msedge (see `npx @playwright/mcp@latest --help`). Unset = MCP default.
-    _br = os.environ.get("PLAYWRIGHT_MCP_BROWSER", "").strip()
-    if _br:
-        args.extend(["--browser", _br])
-    return StdioServerParams(command="npx", args=args, read_timeout_seconds=300)
 
 
 async def main():
@@ -60,20 +31,15 @@ async def main():
         read_timeout_seconds=300
     )
 
-    playwright_server = _playwright_mcp_server_params()
-    print(
-        f"Playwright MCP: npx {' '.join(playwright_server.args)}",
-        flush=True,
-    )
+    playwright_server = StdioServerParams(
+      command="npx", args=["-y", "@playwright/mcp@latest"], read_timeout_seconds=120)
 
-    _fs_root = _automation_project_root()
-    print(f"Filesystem MCP root: {_fs_root}", flush=True)
     filesystem_server = StdioServerParams(
         command="npx",
         args=[
             "-y",
             "@modelcontextprotocol/server-filesystem",
-            _fs_root,
+            "/Users/ishir/PycharmProjects/AgenticAIAutogen"
         ],
         read_timeout_seconds=120
     )
@@ -88,52 +54,14 @@ async def main():
     print("Agent finished execution")
 
 
-async def _run_split_specialist_then_qalead_stop(
-    *,
-    specialist,
-    qalead_closer,
-    specialist_task: str,
-    completed_phrase: str,
-    jira_id: str,
-    step_label: str,
-) -> None:
-    """
-    Split pipeline steps: specialist alone until *Completed, then QALeadCloser outputs exact STOP.
-
-    IMPORTANT (autogen-agentchat): TextMessageTermination(arg) treats arg as *agent source name*, not message text.
-    Use TextMentionTermination(text, sources=[...]) so we match the completion phrase inside the message body.
-    sources= avoids the user task (which repeats the same phrases) ending the run before the specialist speaks.
-    """
-    team_work = RoundRobinGroupChat(
-        participants=[specialist],
-        termination_condition=TextMentionTermination(completed_phrase, sources=[specialist.name])
-        | MaxMessageTermination(120),
-    )
-    await Console(team_work.run_stream(task=specialist_task))
-
-    closer_task = (
-        f"Pipeline sub-step {step_label!r} for ticket {jira_id} is finished. "
-        f"Output exactly the three characters STOP and nothing else — no name, no colon, no period, no markdown, no newline."
-    )
-    team_stop = RoundRobinGroupChat(
-        participants=[qalead_closer],
-        termination_condition=TextMentionTermination("STOP", sources=[qalead_closer.name])
-        | MaxMessageTermination(8),
-    )
-    await Console(team_stop.run_stream(task=closer_task))
-
-
 async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
     """Run the QA pipeline. Email notifications are handled by webhook/server.py."""
     jira_id = os.environ.get("JIRA_TICKET_ID", "EC-298")
     pipeline_step = (os.environ.get("PIPELINE_STEP") or "full").strip().lower()
-    is_split = pipeline_step in ("testcases", "automation", "execute", "bugs")
 
-    # Dirs must exist so filesystem MCP write_file succeeds (paths relative to AUTOMATION_PROJECT_ROOT / repo root).
-    _project_root = _automation_project_root()
-    os.makedirs(os.path.join(_project_root, "ResultReport"), exist_ok=True)
+    _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     os.makedirs(os.path.join(_project_root, "TestCases"), exist_ok=True)
-    os.makedirs(os.path.join(_project_root, "generated_testscript"), exist_ok=True)
+    os.makedirs(os.path.join(_project_root, "ResultReport"), exist_ok=True)
 
     # QALead must NOT list agents that are absent from this run (causes wrong instructions, e.g. TestDesigner during bugs-only).
     if pipeline_step == "full":
@@ -145,9 +73,26 @@ async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
             4. Instruct BugCreator → Jira bugs → wait for "BugCreator Completed".
             5. Reply exactly: STOP
             """
-    elif is_split:
-        # Split steps use _run_split_specialist_then_qalead_stop; full QALead scope not used.
-        _qalead_scope = ""
+    elif pipeline_step == "testcases":
+        _qalead_scope = """
+            THIS RUN: only TestDesigner is in the chat. Instruct ONLY TestDesigner.
+            NEVER mention AutomationAgent, ExecutionAgent, or BugCreator.
+            """
+    elif pipeline_step == "automation":
+        _qalead_scope = """
+            THIS RUN: only AutomationAgent is in the chat. Instruct ONLY AutomationAgent.
+            NEVER mention TestDesigner, ExecutionAgent, or BugCreator.
+            """
+    elif pipeline_step == "execute":
+        _qalead_scope = """
+            THIS RUN: only ExecutionAgent is in the chat. Instruct ONLY ExecutionAgent.
+            NEVER mention TestDesigner, AutomationAgent, or BugCreator.
+            """
+    elif pipeline_step == "bugs":
+        _qalead_scope = """
+            THIS RUN: only BugCreator is in the chat. Instruct ONLY BugCreator.
+            NEVER mention TestDesigner, AutomationAgent, or ExecutionAgent.
+            """
     else:
         _qalead_scope = f"""
             Unrecognized PIPELINE_STEP; follow the user task message only. (step={pipeline_step!r})
@@ -158,8 +103,8 @@ async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
             model_client=model_client,
             workbench=[jira_wb, fs_wb],
             system_message=f"""
-You are a QA Test Case Design expert. 
-Your goal is to produce DETAILED, automation-ready manual test cases that the AutomationAgent can reliably convert into Playwright scripts. Generate detailed manual test cases—never high-level validation statements only.
+You are a QA Test Case Design expert. Your goal is to produce DETAILED, automation-ready manual test cases that the AutomationAgent can reliably convert into Playwright scripts. 
+Generate detailed manual test cases—never high-level validation statements only.
 
 ---
 WORKFLOW
@@ -170,55 +115,36 @@ Step 1: Call the tool `searchJiraIssuesUsingJql` with:
   "jql": "key = {jira_id}"
 }}
 
-Step 2: Read the description, acceptance criteria, and all comments in the User Story.
+Step 2: Read ONLY the Jira issue description, acceptance criteria, and comments returned from Step 1.
+IMPORTANT: Do NOT follow any Confluence page links. Do NOT call any Confluence tools. Use only the Jira issue data returned by searchJiraIssuesUsingJql.
 
-Step 3: Generate all required test categories with full structure (see below). Write the output file using the filesystem MCP `write_file` tool.
+Step 3: Generate all required test categories with full structure (see below). 
+Write the output file using the filesystem MCP `write_file` tool.
 
 ---
 REQUIRED TEST CASE STRUCTURE
 
-Every test case MUST contain these fields IN ORDER:
+Every test case MUST contain these fields:
 
-- Test Case ID (format: <JIRA>-TC-NNN e.g. {jira_id}-TC-001)
+- Test Case ID  (label MUST be exactly this spelling: `Test Case ID:` — do NOT use `TC-ID`, `TestCase ID`, or variants)
 - Title
 - Test Type (exactly one of: Positive / Negative / Boundary / Edge)
-- Preconditions  (once at the **top** of the test case only — see PRECONDITIONS RULE)
-- Steps          (each step = action + **expected result for that step** only — see PER-STEP FORMAT)
-- Expected Result (one **summary** at the end of the test case after all steps — must match the last step’s outcome)
+- Preconditions
+- Test Data
+- Steps
+- Expected Result
 
----
-PRECONDITIONS RULE (MANDATORY)
-
-Put **Preconditions** once per test case (before Steps). Add Just one line, Example: app is ready to test.
-
-Do NOT repeat preconditions under each step.
-
-
----
-PER-STEP FORMAT (MANDATORY)
-
-Under **Steps**, each step has **only**:
-1) The **action** (one UI action per step)
-2) The **expected result for that step** (what must be true immediately after that action — URL, element, text, error)
-
-Use this pattern for every step:
-
- <n>:
-  Action: <single UI action>
-  Expected result: <observable outcome after this action>
-- Test Data inside each step.
-
-    FORBIDDEN
-- Bare action lines with no **Expected result** for that step
-- Only a final Expected Result with no per-step expected results
-
-
-The **Expected Result** line at the end of the test case is still required as a short **summary** (should align with the last step’s Expected result).
+Important: Test Case ID values must look like `{jira_id}-TC-001`, `{jira_id}-TC-002`, … (full Jira key prefix).
 
 ---
 STEP RULES (CRITICAL FOR AUTOMATION)
 
-Each **Action** MUST be a SINGLE UI action. Use only actions such as:
+You MUST write a "Steps:" section for every test case. Each step must be a numbered line (1. ..., 2. ..., etc.). 
+    Never omit the Steps section or leave it empty.
+- Steps MUST be numbered, clear, and executable (one concrete UI or system action per step).
+- For EACH step, add an "Expected Result:" line immediately after the step, describing the expected outcome of that step only. Keep the overall "Expected Result:" at the end for the full test case.
+
+Each step MUST represent a SINGLE UI action that can be automated. Use only actions such as:
 
 - Navigate to URL
 - Enter text in field
@@ -228,34 +154,42 @@ Each **Action** MUST be a SINGLE UI action. Use only actions such as:
 - Verify error message
 - Verify page navigation
 
-FORBIDDEN: Vague actions like "Validate login works" or "Check that the form works."
+FORBIDDEN: Vague statements like "Validate login works" or "Check that the form works."
 
-EXAMPLE (Preconditions + Test Data once at top; expected result **per step** only):
-
-
-Test Data:
-username: standard_user
-password: secret_sauce
+REQUIRED: Explicit, one-action-per-step instructions. Example format:
 
 Steps:
+1. Navigate to the application URL
+   Expected Result: <expected outcome for this step>
+2. Enter "<exact username from Jira issue>" in the Username field
+   Expected Result: Username field contains the entered value.
+3. Enter "<exact password from Jira issue>" in the Password field
+   Expected Result: Password field contains the entered value.
+4. Click the Login button
+   Expected Result: <expected outcome for this step>
+5. Verify the user is redirected to the inventory page
+   Expected Result: <expected outcome for this step>
+Expected Result: <overall expected result for the test case>
 
-Step 1:
-  Action: Navigate to the application URL (use APP_URL from file header only).
-  Expected result: Login page loads; username field, password field, and Login button are visible.
+CRITICAL: Every test case in the file MUST have a "Steps:" section with at least one numbered step (e.g. "1. ..."). 
+Never write a test case without steps.
 
-Step 2:
-  Action: Enter "standard_user" in the Username field (use Test Data).
-  Expected result: Username field shows standard_user.
+---
+TEST DATA (MANDATORY — COPY EXACTLY FROM JIRA)
 
-Step 3:
-  Action: Enter "secret_sauce" in the Password field (use Test Data).
-  Expected result: Password field holds the value (masked).
+Every test case MUST include explicit test data inputs taken VERBATIM from the Jira issue description or acceptance criteria.
 
-Step 4:
-  Action: Click the Login button.
-  Expected result: User is redirected to the inventory page; product list or inventory container is visible.
+RULES:
+- NEVER invent, guess, abbreviate, or truncate any test data value.
+- Copy every credential, URL, username, password, and expected message character-for-character from the Jira issue.
+- If no test data is provided in the Jira issue for a field, mark it as: <not specified in Jira>
 
-Expected Result: User successfully logs in and sees the inventory page with products listed.
+Use this format:
+Test Data:
+username: <exact value from Jira issue>
+password: <exact value from Jira issue>
+
+(Adjust field names and values per test case; always list concrete values from Jira, never placeholders.)
 
 ---
 REQUIRED TEST CATEGORIES
@@ -286,11 +220,12 @@ Rules:
 ---
 FILE NAMING AND HANDLING
 
-- File path MUST be: TestCases/<JIRA_TICKET_ID>_Testcase.txt
-  Example: TestCases/EC-298_Testcase.txt
-- Always write files under the `TestCases` folder at the workspace root.
-- If the file already exists, you MUST OVERWRITE it (do not create numbered variants).
-- Use the filesystem MCP `write_file` tool to write or overwrite the file.
+- You MUST call filesystem `write_file` once with the **exact** relative path: `TestCases/{jira_id}_Testcase.txt`
+  (underscore before Testcase, capital T — this path is required for the pipeline and database sync).
+- Write the **full** file content in that single call. Do not use a different folder or filename.
+- If the file already exists, OVERWRITE it (no numbered variants).
+- Before calling `write_file`, verify: first line is `APP_URL: ...`; sections `Positive Test Cases:`, `Negative Test Cases:`, `Boundary Test Cases:`, `Edge Test Cases:` each contain **at least one** test case block with `Test Case ID:` and `Steps:`.
+- Do **not** reply `TestDesigner Completed` until `write_file` has succeeded for `TestCases/{jira_id}_Testcase.txt`.
 
 ---
 TOOL USAGE RULES (MANDATORY)
@@ -309,11 +244,9 @@ TestCases/<JIRA_TICKET_ID>_Testcase.txt
 ---
 FINAL RESPONSE
 
-When you have finished writing all test files, reply EXACTLY with (no other text):
+Only after `write_file` to `TestCases/{jira_id}_Testcase.txt` succeeds, reply EXACTLY with (no other text):
 
 TestDesigner Completed
-
-Never output STOP or Proceed — only QALead uses those.
 """
             )
 
@@ -387,7 +320,6 @@ Use the filesystem MCP write_file tool.
 Do NOT execute the scripts.
 
 ALWAYS end your response with exactly: AutomationAgent Completed
-Never output STOP or Proceed — only QALead uses those.
 """
     )
 
@@ -395,53 +327,131 @@ Never output STOP or Proceed — only QALead uses those.
             name="ExecutionAgent",
             model_client=model_client,
             workbench=[pw_wb, fs_wb],
-            system_message=f"""
-        ## Role
-        You execute the existing Playwright spec by driving the real browser through **Playwright MCP tools only**.
-        Do not run `npx playwright test`, Node, or TypeScript. Do not edit the spec.
+            system_message="""
+        You are a QA Automation Script Execution Agent. 
+        Your responsibility is to execute Playwright automation tests using Playwright MCP browser tools and generate execution artifacts that will be consumed by other AI agents. You DO NOT generate new automation scripts. You DO NOT modify test scripts. You EXECUTE the existing test flow using Playwright MCP browser tools.
 
-        ## Headless / host process (important)
-        The Playwright MCP server is started by the host with `--headless` or headed mode — **you cannot change that from here**.
-        Headless still runs a real Chromium; use `browser_navigate` and the same steps as headed. If tools fail, report the tool error text in JSON.
+            EXECUTION APPROACH
+            Use Playwright MCP browser tools such as:
+            browser_navigate
+            browser_click
+            browser_type
+            browser_wait_for
+            browser_screenshot
+            Execute the user flow step-by-step and validate expected outcomes.
+            
+            EXECUTION WORKFLOW
+            
+            1. Locate Automation Scripts
+               Look inside the folder: generated_testscript
+               Find all files with extension: .spec.ts
+               Example: generated_testscript/Script_EC-298.spec.ts
+               Use filesystem MCP tools to read the file.
+            
+            2. Extract Jira Ticket ID
+               Example file name: Script_EC-298.spec.ts
+               Extract: JIRA_TICKET_ID = EC-298
+            
+            3. Understand the Test Flow
+               Read the test script and identify:
+               • target URL
+               • test steps
+               • expected validations
+            
+            4. Execute Test Using MCP Browser Tools
+               Execute the steps sequentially using Playwright MCP tools.
+               Example execution pattern:
+               browser_navigate(url)
+               browser_type(username)
+               browser_type(password)
+               browser_click(login_button)
+               browser_wait_for(expected_element)
+               Validate outcomes using page snapshot or expected element visibility.
+            
+            5. Track Execution Results
+               For each test case track:
+               • test name
+               • PASS or FAIL
+               • error message if failed
+            
+            6. Generate Execution Artifacts
+               Save all files in folder: ResultReport
+               Create the folder if it does not exist.
+               Use filesystem MCP write_file tool to write or overwrite files.
+               
+               POST ACTION VALIDATION RULE
 
-        ## Source of truth
-        - Read once: `generated_testscript/Script_{jira_id}_.spec.ts` (filesystem `read_file`).
-        - From it: `const APP_URL = '...'` (full https URL for `browser_navigate`), each `test('EXACT_TITLE', async ({{ page }}) => {{ ... }})` block = one logical test.
-        - Use the **exact** string inside `test('...', ...)` as `title` in JSON. Do not use TestCases/*.txt for execution.
+                After performing a critical action such as clicking Login, navigation, or submitting a form, the agent must wait for the expected next state.
+                
+                Use browser_wait_for with a reasonable timeout to detect the next expected page state.
+                
+                If the expected page state appears within the timeout → mark the step as PASSED.
+                
+                If the expected page state does NOT appear within the timeout → treat this as a FAILED test step.
+                
+                When a failure occurs:
+                
+                Immediately capture screenshot using browser_screenshot.
+                
+                Record the error message and failed step.
+                
+                Mark the test case as FAILED.
+                
+                Continue execution of remaining test cases.
+                
+                Never assume success.
+                Always treat timeout or missing expected state as a failure condition.
+            
+            FILE 1 — EXECUTION JSON (SOURCE OF TRUTH)
+            File name format: execution_<JIRA_TICKET_ID>.json
+            Example: ResultReport/execution_EC-298.json
+            Structure example:
+            {
+            "jira_ticket_id": "EC-298",
+            "total_tests": 4,
+            "passed_tests": 3,
+            "failed_tests": 1,
+            "failed_test_details": [
+            {
+            "title": "Test Name",
+            "error_message": "Failure description"
+            }
+            ]
+            }
+            Do NOT generate execution_<JIRA_ID>.json until ALL test cases have completed execution.
 
-        ## Hard rules (pipeline + browser)
-        1. **One session, one test at a time:** finish one `test()` (navigate → steps → pass/fail) before the next. No parallel browser tool calls; no second browser/window — that invalidates the run.
-        2. **Per test, first browser_* call** is always `browser_navigate` with APP_URL (avoids about:blank). Then `browser_snapshot`. Do not snapshot before that navigate when starting a test.
-        3. **Refs:** after each snapshot, use `ref` (and schema fields) from MCP for `browser_type`, `browser_click`, `browser_fill_form` — match the spec’s selectors (e.g. `[data-test="username"]`).
-        4. **Artifacts before done:** use filesystem `write_file` to create **both** `ResultReport/execution_{jira_id}.json` and `ResultReport/result_{jira_id}.txt` **before** you say `ExecutionAgent Completed`. If the browser or a step fails, still write JSON with real `error_message` text (e.g. from tool errors or snapshot). Optional: `browser_screenshot` → `ResultReport/screenshot_{jira_id}.png` if any test failed.
-
-        ## Spec API → MCP (never execute the .spec.ts file)
-        - `page.goto` / navigation → `browser_navigate(url)`
-        - `page.fill` → `browser_type` or `browser_fill_form` (after snapshot, per tool schema)
-        - `page.click` → `browser_click`
-        - `expect(...)` (visible, value, text, URL) → `browser_wait_for` / `browser_snapshot`; judge pass/fail from snapshot or tool output, not `expect()`
-
-        ## Per-test loop (match the spec line-by-line)
-        For each `test('TITLE', ...)` body, follow the **exact order** of statements in that block:
-        1. `browser_navigate(APP_URL)` → `browser_snapshot` (fresh page for each test).
-        2. Walk the body top-to-bottom: for every `page.fill` **before** the next `page.click`, perform those fills with `browser_type` / `browser_fill_form` using refs from the latest snapshot — **never click `[data-test="login-button"]` until every spec `fill` that appears above that click in the same test has been done.** Skipping a fill causes real failures (e.g. "Username is required").
-        3. For tests that **intentionally** leave fields empty (only `toHaveValue('')` checks, no `fill`), do not type into those fields; snapshot, then click per spec.
-        4. After click, use `browser_wait_for` / `browser_snapshot` to verify what the spec’s `expect` lines require (error banner text, URL, inventory list).
-        5. Record PASS or FAIL for that TITLE (FAIL = assertion not met or tool error; copy visible error / tool text verbatim when possible).
-        6. For screenshots, prefer `browser_screenshot` with a **filename** under `ResultReport/` if the tool allows, to avoid huge inline image payloads.
-
-        ## execution_{jira_id}.json shape (write_file after **all** tests)
-        {{
-            "jira_ticket_id": "{jira_id}",
-            "total_tests": <int>,
-            "passed_tests": <int>,
-            "failed_tests": <int>,
-            "failed_test_details": [{{"title": "<exact test() title>", "error_message": "<string>"}}]
-        }}
-
-        ## End
-        After both files are written, send the exact phrase ExecutionAgent Completed **once** — do not repeat it in later turns.
-        Never output STOP or Proceed — only QALead uses those.
+            The JSON execution report must be written ONLY after:
+            1. All test cases have been executed
+            2. All pass/fail results have been collected
+            3. All screenshots for failures are captured
+                        
+            FILE 2 — TEXT EXECUTION SUMMARY
+            File name format: result_<JIRA_TICKET_ID>.txt
+            Example: ResultReport/result_EC-298.txt
+            Content must include:
+            Jira Ticket ID
+            Total Tests
+            Passed Tests
+            Failed Tests
+            Failed Test Titles
+            Error Messages
+            
+            FILE 3 — FAILURE SCREENSHOT
+            If a test fails capture screenshot using browser_screenshot
+            File name format: screenshot_<JIRA_TICKET_ID>.png
+            Example: ResultReport/screenshot_EC-298.png
+            
+            CRITICAL RULES
+            • Always execute test flow using MCP browser tools
+            • Do NOT generate new automation scripts
+            • Do NOT modify the test script
+            • Do NOT skip test cases
+            • Always generate execution artifacts
+            • JSON execution report is the source of truth
+            
+            FINAL RESPONSE
+            When execution is finished respond EXACTLY with:
+            ExecutionAgent Completed
         """
     )
 
@@ -600,42 +610,24 @@ Never output STOP or Proceed — only QALead uses those.
             When processing of all execution reports is finished respond EXACTLY with:
             BugCreator Completed
             Do NOT include any additional text.
-            Never output STOP or Proceed — only QALead uses those.
         """
     )
 
-    _qalead_critical = """
-            ══════════════════════════════════════════════
-            CRITICAL RULE — FULL / GENERIC PIPELINE
-            ══════════════════════════════════════════════
-            The initial user TASK tells you which agents to instruct and when to reply STOP.
-            When the task says reply STOP — output exactly STOP with no other text (no name prefix, no colon, no period).
-            Do NOT send emails. Email notifications are handled externally.
-            ══════════════════════════════════════════════
-        """
-
-    QALeadCloser = None
-    QALead = None
-    if is_split:
-        QALeadCloser = AssistantAgent(
-            name="QALead",
-            model_client=model_client,
-            workbench=[],
-            system_message="""
-You are the QA pipeline closer. The specialist agent has already finished its sub-step.
-When the user says the sub-step is done, your entire reply must be exactly three letters: STOP
-No agent name, no colon, no period, no markdown, no spaces, no explanation — only STOP.
-""",
-        )
-    else:
-        QALead = AssistantAgent(
+    QALead = AssistantAgent(
             name="QALead",
             model_client=model_client,
             workbench=[],
             system_message=f"""
             You are the QA Lead supervising the testing automation workflow.
 
-            {_qalead_critical}
+            ══════════════════════════════════════════════
+            CRITICAL RULE — READ THIS FIRST
+            ══════════════════════════════════════════════
+            The initial user TASK message tells you EXACTLY which agent to instruct
+            and EXACTLY when to reply STOP. Follow that task and the scope below.
+            When the task says reply STOP — do so immediately with no other text.
+            Do NOT send emails. Email notifications are handled externally.
+            ══════════════════════════════════════════════
 
             SCOPE FOR THIS RUN (PIPELINE_STEP={pipeline_step}):
             {_qalead_scope}
@@ -643,71 +635,42 @@ No agent name, no colon, no period, no markdown, no spaces, no explanation — o
             Each agent must only perform their own responsibility.
             Agents must NOT perform each other's responsibilities.
 
-            """,
-        )
+            """
+    )
 
     if pipeline_step == "testcases":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=TestDesigner,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. Follow your system instructions: fetch from Jira, "
-                f"write_file TestCases/{jira_id}_Testcase.txt. "
-                f"When done, send one TextMessage whose content is exactly: TestDesigner Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="TestDesigner Completed",
-            jira_id=jira_id,
-            step_label="testcases",
+        task = (
+            f"Instruct TestDesigner to generate test cases for Jira ticket {jira_id}. "
+            f"When TestDesigner replies 'TestDesigner Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, TestDesigner]
 
     elif pipeline_step == "automation":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=AutomationAgent,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. Read TestCases/{jira_id}_Testcase.txt, "
-                f"write generated_testscript/Script_{jira_id}_.spec.ts. "
-                f"When done, send one TextMessage whose content is exactly: AutomationAgent Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="AutomationAgent Completed",
-            jira_id=jira_id,
-            step_label="automation",
+        task = (
+            f"Instruct AutomationAgent to generate Playwright scripts for Jira ticket {jira_id}. "
+            f"When AutomationAgent replies 'AutomationAgent Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, AutomationAgent]
 
     elif pipeline_step == "execute":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=ExecutionAgent,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. "
-                f"(1) read_file generated_testscript/Script_{jira_id}_.spec.ts "
-                f"(2) run each test() via Playwright MCP; first browser_* per test: browser_navigate(APP_URL from script) "
-                f"(3) write_file ResultReport/execution_{jira_id}.json "
-                f"(4) write_file ResultReport/result_{jira_id}.txt (summary) "
-                f"(5) if any test failed, browser_screenshot ResultReport/screenshot_{jira_id}.png "
-                f"(6) when done, send one TextMessage whose content is exactly: ExecutionAgent Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="ExecutionAgent Completed",
-            jira_id=jira_id,
-            step_label="execute",
+        task = (
+            f"Instruct ExecutionAgent to execute the Playwright scripts for Jira ticket {jira_id} "
+            f"and save results to ResultReport. "
+            f"When ExecutionAgent replies 'ExecutionAgent Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, ExecutionAgent]
 
     elif pipeline_step == "bugs":
-        await _run_split_specialist_then_qalead_stop(
-            specialist=BugCreator,
-            qalead_closer=QALeadCloser,
-            specialist_task=(
-                f"Jira ticket {jira_id}. Analyze ResultReport and create Jira bugs per your instructions. "
-                f"When done, send one TextMessage whose content is exactly: BugCreator Completed "
-                f"(no other text, never STOP or Proceed)."
-            ),
-            completed_phrase="BugCreator Completed",
-            jira_id=jira_id,
-            step_label="bugs",
+        task = (
+            f"Instruct BugCreator to analyze execution results in ResultReport and create Jira bugs "
+            f"for any failed tests for Jira ticket {jira_id}. "
+            f"When BugCreator replies 'BugCreator Completed', you MUST reply with exactly: STOP"
         )
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(30)
+        participants = [QALead, BugCreator]
 
     else:
         task = (
@@ -715,43 +678,17 @@ No agent name, no colon, no period, no markdown, no spaces, no explanation — o
             f"TestDesigner → AutomationAgent → ExecutionAgent → BugCreator. "
             f"After all agents have finished, reply exactly: STOP"
         )
-        termination = TextMentionTermination("STOP", sources=["QALead"]) | MaxMessageTermination(120)
+        termination = TextMessageTermination("STOP") | MaxMessageTermination(60)
         participants = [QALead, TestDesigner, AutomationAgent, ExecutionAgent, BugCreator]
 
-        team = RoundRobinGroupChat(
-            participants=participants,
-            termination_condition=termination
-        )
+    team = RoundRobinGroupChat(
+        participants=participants,
+        termination_condition=termination
+    )
 
-        await Console(
-            team.run_stream(task=task)
-        )
-
-    # If execute step ended without agent-written artifacts, BugCreator still needs a valid execution JSON.
-    if pipeline_step == "execute":
-        ej = os.path.join(_project_root, "ResultReport", f"execution_{jira_id}.json")
-        if not os.path.isfile(ej):
-            stub = {
-                "jira_ticket_id": jira_id,
-                "total_tests": 0,
-                "passed_tests": 0,
-                "failed_tests": 0,
-                "failed_test_details": [],
-                "agent_note": "Stub written by pipeline: ExecutionAgent did not create execution JSON (timeout, crash, or no tool calls).",
-            }
-            with open(ej, "w", encoding="utf-8") as f:
-                json.dump(stub, f, indent=2)
-            rt = os.path.join(_project_root, "ResultReport", f"result_{jira_id}.txt")
-            with open(rt, "w", encoding="utf-8") as f:
-                f.write(
-                    f"Jira: {jira_id}\n"
-                    f"ERROR: No execution report from ExecutionAgent. Stub JSON written.\n"
-                    f"Check Playwright MCP, OPENAI_API_KEY, and agent logs.\n"
-                )
-            print(
-                f"WARNING: Wrote stub ResultReport/execution_{jira_id}.json — ExecutionAgent produced no report.",
-                flush=True,
-            )
+    await Console(
+        team.run_stream(task=task)
+    )
 
     # ── Token usage summary ──────────────────────────────────────────────────
     usage = model_client.total_usage()

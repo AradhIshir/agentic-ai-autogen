@@ -24,6 +24,9 @@ test-results/
 playwright-report/
 .playwright/
 
+# Local SQLite DB (path set via QA_DB_PATH in .env)
+qa_data.db
+
 # Optional: keep if you want to track
 # ResultReport/
 # generated_testscript/
