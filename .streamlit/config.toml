@@ -5,5 +5,9 @@ secondaryBackgroundColor = "#1F2937"
 textColor = "#FFFFFF"
 font = "sans serif"
 
+# Hide default multipage links ("app", "Login") — navigation is custom in ui/app.py
+[client]
+showSidebarNavigation = false
+
 [server]
 headless = true

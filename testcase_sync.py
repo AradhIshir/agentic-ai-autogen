@@ -158,7 +158,9 @@ def _parse_one_block(block: str) -> dict | None:
         elif re.match(r"^Test Data:\s*", stripped, re.I):
             td = re.sub(r"^Test Data:\s*", "", stripped, flags=re.I).strip()
             i += 1
-            while i < len(lines) and lines[i].strip() and not re.match(r"^(Steps?|Expected Result):", lines[i].strip(), re.I):
+            while i < len(lines) and lines[i].strip() and not re.match(
+                r"^(Steps?|Expected\s+[Rr]esult):", lines[i].strip(), re.I
+            ):
                 td += "\n" + lines[i].strip()
                 i += 1
             d["test_data"] = td.strip()
@@ -166,38 +168,102 @@ def _parse_one_block(block: str) -> dict | None:
         elif re.match(r"^Steps?:\s*", stripped, re.I):
             i += 1
             step_num = 0
+            # New TestDesigner format: Step 1: / Action: / Expected result: (per-step)
+            pending: dict | None = None  # {"num": int, "action": str, "er": str}
+
+            def _flush_pending() -> None:
+                nonlocal pending
+                if not pending:
+                    return
+                if pending.get("action") or pending.get("er"):
+                    d["steps"].append(
+                        {
+                            "step_number": pending["num"],
+                            "step_action": (pending.get("action") or "").strip(),
+                            "expected_result": (pending.get("er") or "").strip(),
+                        }
+                    )
+                pending = None
+
             while i < len(lines):
                 line = lines[i]
                 stripped = line.strip()
-                # "Expected Result:" at start of line (no indent) = overall, end Steps section
-                if re.match(r"^Expected Result:\s*", stripped, re.I):
-                    if not d["steps"]:
-                        break
-                    # Per-step ER lines are indented under the step (often 3 spaces; older files used 5+).
-                    # Overall ER for the whole test case starts at column 0 (no leading spaces).
-                    lead = len(line) - len(line.lstrip(" "))
-                    if lead >= 1:
-                        step_result = re.sub(r"^Expected Result:\s*", "", stripped, flags=re.I).strip()
+                lead = len(line) - len(line.lstrip(" "))
+                er_m = re.match(r"^Expected\s+[Rr]esult:\s*(.*)$", stripped, re.I)
+
+                # Indented "Expected result:" → per-step (new format or legacy under numbered step)
+                if er_m and lead >= 1:
+                    step_result = er_m.group(1).strip()
+                    if pending is not None:
+                        pending["er"] = step_result
+                        _flush_pending()
+                    elif d["steps"]:
                         d["steps"][-1]["expected_result"] = step_result
-                        i += 1
-                        continue
-                    # Column 0 = final Expected Result for the test case — end Steps section
-                    d["expected_result"] = re.sub(r"^Expected Result:\s*", "", stripped, flags=re.I).strip()
+                    i += 1
+                    continue
+
+                # Column 0 "Expected Result:" → summary for whole test case (end Steps section)
+                if er_m and lead < 1:
+                    if pending:
+                        _flush_pending()
+                    if not d["steps"]:
+                        d["expected_result"] = er_m.group(1).strip()
+                    else:
+                        d["expected_result"] = er_m.group(1).strip()
                     i += 1
                     break
+
                 if not stripped:
                     i += 1
                     continue
-                # Numbered step: "1. ..." or "   1. ..."
+
+                step_hdr = re.match(r"^Step\s*(\d+)\s*:\s*(.*)$", stripped, re.I)
+                if step_hdr:
+                    _flush_pending()
+                    n = int(step_hdr.group(1))
+                    rest = (step_hdr.group(2) or "").strip()
+                    pending = {"num": n, "action": rest, "er": ""}
+                    i += 1
+                    continue
+
+                # TestDesigner format: step number alone on the line — "1:" then indented Action / Expected result
+                num_colon = re.match(r"^(\d+)\s*:\s*(.*)$", stripped)
+                if num_colon:
+                    _flush_pending()
+                    n = int(num_colon.group(1))
+                    rest = (num_colon.group(2) or "").strip()
+                    pending = {"num": n, "action": rest, "er": ""}
+                    i += 1
+                    continue
+
+                action_m = re.match(r"^Action:\s*(.*)$", stripped, re.I)
+                if action_m and pending is not None:
+                    extra = action_m.group(1).strip()
+                    if pending.get("action") and extra:
+                        pending["action"] = (pending["action"] + " " + extra).strip()
+                    elif extra:
+                        pending["action"] = extra
+                    i += 1
+                    continue
+
+                # Legacy numbered step: "1. ..." or "   1. ..."
                 step_m = re.match(r"^(\d+)\.\s*(.+)$", stripped)
                 if step_m:
+                    _flush_pending()
                     step_num += 1
-                    d["steps"].append({
-                        "step_number": step_num,
-                        "step_action": step_m.group(2).strip(),
-                        "expected_result": "",
-                    })
+                    d["steps"].append(
+                        {
+                            "step_number": step_num,
+                            "step_action": step_m.group(2).strip(),
+                            "expected_result": "",
+                        }
+                    )
+                    i += 1
+                    continue
+
                 i += 1
+
+            _flush_pending()
             continue
         elif re.match(r"^Expected Result:\s*", stripped, re.I):
             d["expected_result"] = re.sub(r"^Expected Result:\s*", "", stripped, flags=re.I).strip()
@@ -268,6 +334,18 @@ def sync_testcases_to_db(jira_id: str, project_key: str | None = None, project_n
                     conn.execute(
                         "INSERT INTO test_case_steps (testcase_id, step_number, step_action, expected_result) VALUES (?, ?, ?, ?)",
                         (tc["testcase_id"], s["step_number"], s["step_action"], s.get("expected_result") or ""),
+                    )
+            # testcase sync always inserts status NOT_RUN; restore from execution_results if present (rows survive the replace above)
+            for tc in cases:
+                tid = tc["testcase_id"]
+                row = conn.execute(
+                    "SELECT execution_status FROM execution_results WHERE testcase_id = ? ORDER BY execution_date DESC LIMIT 1",
+                    (tid,),
+                ).fetchone()
+                if row and row[0]:
+                    conn.execute(
+                        "UPDATE test_cases SET status = ? WHERE testcase_id = ?",
+                        (str(row[0]).strip(), tid),
                     )
         return len(cases), ""
     except Exception as e:

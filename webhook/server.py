@@ -48,11 +48,19 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
-    from db_sync import db_sync_for_step  # type: ignore
+    from db_sync import db_sync_for_step, failed_playwright_title_matches_tc  # type: ignore
     _DB_SYNC_AVAILABLE = True
 except ImportError as _import_err:
     log.warning("db_sync not importable – DB sync disabled: %s", _import_err)
     _DB_SYNC_AVAILABLE = False
+
+    def failed_playwright_title_matches_tc(tc_id: str, tc_title: str, playwright_failed_title: str) -> bool:
+        """Fallback if db_sync missing: match only by TC id substring in failure title."""
+        if not playwright_failed_title or not tc_id:
+            return False
+        tid = re.sub(r"\s+", "", tc_id.strip().lower())
+        fl = re.sub(r"\s+", "", playwright_failed_title.lower())
+        return tid in fl
 
 try:
     from testcase_sync import parse_testcase_file as _parse_testcase_file_shared  # type: ignore
@@ -366,10 +374,8 @@ async def _send_email2(ticket_id: str) -> None:
     failed    = exec_data.get("failed_tests", 0)
     skipped   = max(0, total - passed - failed)
     pass_rate = round(passed / total * 100) if total > 0 else 0
-    failed_titles = {
-        d.get("title", "").lower()
-        for d in exec_data.get("failed_test_details", [])
-    }
+    failed_details_list = exec_data.get("failed_test_details", []) or []
+    failed_title_strings = [d.get("title", "") for d in failed_details_list if d.get("title")]
 
     # TC file for ID mapping
     tc_path = os.path.join(PROJECT_ROOT, "TestCases", f"{ticket_id}_Testcase.txt")
@@ -396,10 +402,13 @@ async def _send_email2(ticket_id: str) -> None:
                 return key
         return "—"
 
-    # Build test-results table
+    # Build test-results table (match Playwright failure titles to manual TC via TC id + safe rules — see db_sync)
     rows = ""
     for tc in tc_list:
-        is_fail   = tc["title"].lower() in failed_titles
+        is_fail = any(
+            failed_playwright_title_matches_tc(tc["tc_id"], tc["title"], ft)
+            for ft in failed_title_strings
+        )
         result    = "❌ Fail" if is_fail else "✅ Pass"
         bug_id    = _find_bug(tc["title"]) if is_fail else "—"
         rows += f"  {ticket_id:<8} | {tc['tc_id']:<20} | {tc['title'][:42]:<42} | {result:<8} | {bug_id}\n"

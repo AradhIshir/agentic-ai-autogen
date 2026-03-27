@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import json
 import requests
@@ -14,6 +15,19 @@ from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.tools.mcp import StdioServerParams, McpWorkbench
 
 load_dotenv()
+
+
+def _ensure_stdio_blocking() -> None:
+    """Piped stdout/stderr (e.g. webhook subprocess) may be non-blocking; autogen Console then raises BlockingIOError."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            fd = stream.fileno()
+        except (OSError, AttributeError, ValueError):
+            continue
+        try:
+            os.set_blocking(fd, True)
+        except (OSError, AttributeError, ValueError):
+            pass
 
 
 def _automation_project_root() -> str:
@@ -42,10 +56,16 @@ def _playwright_mcp_server_params() -> StdioServerParams:
     _br = os.environ.get("PLAYWRIGHT_MCP_BROWSER", "").strip()
     if _br:
         args.extend(["--browser", _br])
+    # MCP defaults --timeout-action to 5000ms; locator waits in ExecutionAgent then hit TimeoutError. Override via env.
+    _action_ms = (os.environ.get("PLAYWRIGHT_MCP_TIMEOUT_ACTION_MS") or "20000").strip()
+    if _action_ms.isdigit():
+        args.extend(["--timeout-action", _action_ms])
     return StdioServerParams(command="npx", args=args, read_timeout_seconds=300)
 
 
 async def main():
+    _ensure_stdio_blocking()
+
     model_client = OpenAIChatCompletionClient(
         model="gpt-4o-mini",
         api_key=os.environ["OPENAI_API_KEY"]
@@ -135,6 +155,12 @@ async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
     os.makedirs(os.path.join(_project_root, "TestCases"), exist_ok=True)
     os.makedirs(os.path.join(_project_root, "generated_testscript"), exist_ok=True)
 
+    # TestDesigner Jira fetch: narrow MCP/tool response to cut prompt tokens. Override with JIRA_TESTDESIGNER_ISSUE_FIELDS
+    # (comma-separated) if acceptance criteria live only in customfield_* etc.
+    _jira_td_fields = (
+        os.environ.get("JIRA_TESTDESIGNER_ISSUE_FIELDS") or "summary,description,comment,issuetype,status"
+    ).strip()
+
     # QALead must NOT list agents that are absent from this run (causes wrong instructions, e.g. TestDesigner during bugs-only).
     if pipeline_step == "full":
         _qalead_scope = f"""
@@ -159,44 +185,54 @@ async def _run_pipeline(model_client, jira_wb, pw_wb, fs_wb):
             workbench=[jira_wb, fs_wb],
             system_message=f"""
 You are a QA Test Case Design expert. 
-Your goal is to produce DETAILED, automation-ready manual test cases that the AutomationAgent can reliably convert into Playwright scripts. Generate detailed manual test cases—never high-level validation statements only.
+Your goal is to produce DETAILED, automation-ready manual test cases that the AutomationAgent can 
+reliably convert into Playwright scripts. Generate detailed manual test cases—never high-level validation 
+statements only.
 
----
 WORKFLOW
 
-Step 1: Call the tool `searchJiraIssuesUsingJql` with:
+Step 1: Call the tool `searchJiraIssuesUsingJql` with a **minimal** payload so the response omits changelog, transitions, watchers, attachments, worklog, subtasks, and issue links. Use maxResults 1 and limit fields to test-design inputs only. Do **not** pass expand.
 {{
   "cloudId": "67d1724f-9c51-4717-bc9a-687b0f5aacd7",
-  "jql": "key = {jira_id}"
+  "jql": "key = {jira_id}",
+  "maxResults": 1,
+  "fields": "{_jira_td_fields}"
 }}
+If the tool schema expects `fields` as a JSON array of strings, pass the same names as an array instead of one comma-separated string.
 
-Step 2: Read the description, acceptance criteria, and all comments in the User Story.
-
-Step 3: Generate all required test categories with full structure (see below). Write the output file using the filesystem MCP `write_file` tool.
-
+Step 2: Read the description, acceptance criteria, and latest comment in the User Story.
+Step 3: Generate all required test categories with full structure (see below). 
+Write the output file using the filesystem MCP `write_file` tool.
 ---
 REQUIRED TEST CASE STRUCTURE
-
 Every test case MUST contain these fields IN ORDER:
-
 - Test Case ID (format: <JIRA>-TC-NNN e.g. {jira_id}-TC-001)
 - Title
-- Test Type (exactly one of: Positive / Negative / Boundary / Edge)
+- Test Type (exactly one of: Positive / Negative / Boundary / Edge- see REQUIRED TEST CATEGORIES RULE)
 - Preconditions  (once at the **top** of the test case only — see PRECONDITIONS RULE)
 - Steps          (each step = action + **expected result for that step** only — see PER-STEP FORMAT)
 - Expected Result (one **summary** at the end of the test case after all steps — must match the last step’s outcome)
-
 ---
 PRECONDITIONS RULE (MANDATORY)
 
-Put **Preconditions** once per test case (before Steps). Add Just one line, Example: app is ready to test.
+Put **Preconditions** once per test case (before Steps). Add Just one line,
+RULE — PRECONDITIONS MUST BE COMPLETE AND SELF-CONTAINED:
+Every test case must be independently executable from a clean 
+app state. Never assume state carries over from a previous test.
+If a precondition requires a specific app state, describe it 
+fully in the preconditions field as a single clear statement 
+that covers everything needed before the first step executes.
+Examples:
 
+  WRONG: "User is a authenticated user"
+  CORRECT: "User is a authenticated user with login credentials"
+
+The preconditions field must be specific enough that anyone reading it can set up the exact starting state without 
+referring to any other test case.
 Do NOT repeat preconditions under each step.
-
 
 ---
 PER-STEP FORMAT (MANDATORY)
-
 Under **Steps**, each step has **only**:
 1) The **action** (one UI action per step)
 2) The **expected result for that step** (what must be true immediately after that action — URL, element, text, error)
@@ -231,8 +267,6 @@ Each **Action** MUST be a SINGLE UI action. Use only actions such as:
 FORBIDDEN: Vague actions like "Validate login works" or "Check that the form works."
 
 EXAMPLE (Preconditions + Test Data once at top; expected result **per step** only):
-
-
 Test Data:
 username: standard_user
 password: secret_sauce
@@ -258,9 +292,9 @@ Step 4:
 Expected Result: User successfully logs in and sees the inventory page with products listed.
 
 ---
-REQUIRED TEST CATEGORIES
+REQUIRED TEST CATEGORIES RULE
 
-You MUST generate test cases in all four categories:
+You MUST generate test cases in all four categories : 
 
 - Positive Test Cases
 - Negative Test Cases
@@ -333,8 +367,47 @@ Extract every test case including: Test Case ID, Title, Test Type, Test Data, St
 Do NOT write any code until you have read and understood the entire file.
 
 STEP 2 — COPY TEST DATA EXACTLY (CRITICAL)
-Copy ALL values (usernames, passwords, URLs) character-for-character from the test case file.
-NEVER abbreviate or guess any value. If the file says password: secret_sauce, use 'secret_sauce' exactly.
+Copy ALL values (usernames, passwords, URLs) from the test case file.
+NEVER abbreviate or guess any test data value. If the file says password: secret_sauce, use 'secret_sauce' exactly.
+
+Rule 9 — ERROR MESSAGE ASSERTIONS: Never copy the full error
+message text from the test case file into toContainText().
+The actual error displayed by the app may differ in wording,
+prefix, punctuation, or sentence structure.
+
+Instead, extract 2 to 4 unique words that identify the error
+and would appear in any reasonable variation of that message:
+
+  If expected error is about invalid credentials:
+    toContainText('do not match')
+
+  If expected error is about empty username:
+    toContainText('Username is required')
+
+  If expected error is about empty password:
+    toContainText('Password is required')
+
+  If expected error is about locked account:
+    toContainText('locked out')
+
+  If expected error is about session expiry:
+    toContainText('session expired')
+
+  If expected error is about permissions:
+    toContainText('not authorized')
+
+  If expected error is about missing fields:
+    toContainText('is required')
+
+General rules for picking the keyword:
+  - Pick words from the MIDDLE of the expected error description
+  - Avoid the first word — apps often add prefixes like
+    "Epic sadface:", "Error:", "Warning:", "Alert:" that vary
+  - Avoid punctuation at the end — period, exclamation mark
+  - Avoid words that appear in other error messages on the
+    same page — pick the most unique 2 to 4 words
+  - Never use the full sentence from the test case file
+  - When unsure, prefer a shorter match over a longer one
 
 STEP 3 — ONE test() BLOCK PER TEST CASE (CRITICAL)
 Create exactly ONE test() block for EACH test case in the file.
@@ -363,23 +436,36 @@ Rule 4 — INPUT FIELDS: Input elements hold a value attribute, not text content
   NEVER use toContainText() or toHaveText() on an input element.
   NEVER call page.fill() with an empty string to clear a field — if the field should be empty, just assert toHaveValue('').
 
-Rule 5 — ERROR MESSAGES: Use toContainText() with a partial string from the expected error.
+Rule 5 — ERROR MESSAGES: Use toBeVisible() then toContainText() with a partial keyword per Rule 9:
   await expect(page.locator('[data-test="error"]')).toBeVisible();
-  await expect(page.locator('[data-test="error"]')).toContainText('Username and password do not match');
+  await expect(page.locator('[data-test="error"]')).toContainText('do not match');
   Never use toHaveText() for error messages.
+  Never use the full expected error sentence — always a partial keyword per Rule 9.
 
 Rule 6 — POSITIVE TESTS (successful login): After clicking login, always verify the redirect URL and page content:
-  await expect(page).toHaveURL(/.*inventory\\.html/);
+  await expect(page).toHaveURL(/.*inventory\.html/);
   await expect(page.locator('.inventory_list')).toBeVisible();
 
 Rule 7 — EACH TEST must start with these two lines:
   await page.goto(APP_URL);
   await expect(page).toHaveURL(APP_URL);
 
-Rule 8 — PARENTHESES: Every expect() call wraps a locator() call. Always close both parentheses separately:
-  await expect(page.locator('selector')).toHaveValue('value');
-  Note: page.locator('selector') has its own closing ) and then expect(...) has its own closing ).
+Rule 8 — PARENTHESES (CRITICAL): Every expect() call wraps a locator() call.
+  The locator() closing ) must come BEFORE the . that calls the assertion method.
+  expect( opens last and ) closes last.
 
+  CORRECT:  await expect(page.locator('[data-test="error"]')).toBeVisible();
+  WRONG:    await expect(page.locator('[data-test="error"]').toBeVisible());
+
+  After writing every expect() line, verify: does expect( open and ) close last?
+  If .toBeVisible() or any assertion method appears inside the locator() parens — fix it immediately.
+
+Rule 10 — CLOSING BRACES: Every test() block must end with }});
+  After writing all assertions for a test case, always close with:
+    }});
+  Before writing the next test() block, confirm the previous one is closed.
+  The final line of the entire file must be }}); with no trailing code after it.
+  
 FILE HANDLING
 Write the script to: generated_testscript/Script_{jira_id}_.spec.ts
 If the file already exists, OVERWRITE it. Do NOT create numbered variants.
@@ -487,15 +573,23 @@ Never output STOP or Proceed — only QALead uses those.
             3. Open files inside the TestCases folder using the filesystem MCP tool that matches the <JIRA_ID> .
             4. Search for the matching test case section where the title corresponds to the failed test case.
             Example structure inside the test case file:
-            Positive Test Cases:
-            5. Test Case: Successful Login
-            * Precondition: User is on the login page.
-            * Steps:
-            1. Navigate to https://www.saucedemo.com
-            2. Enter standard_user in Username field
-            3. Enter sauce in Password field
-            4. Click Login
-            * Expected Result: User is redirected to /inventory.html page and product list is visible.
+            Preconditions 
+            Test Data:
+            username: standard_user
+            password: secret_sauce
+
+            Steps:
+
+            Step 1:
+            Action: Navigate to the application URL (use APP_URL from file header only).
+            Expected result: Login page loads; username field, password field, and Login button are visible.
+
+            Step 2:
+            Action: Enter "standard_user" in the Username field (use Test Data).
+            Expected result: Username field shows standard_user.
+
+            Expected Result at the end of the test case:
+
             1. Extract the following information:Precondition, Steps, Expected Result
             2. Use the extracted information when generating the Jira bug description.
             JIRA BUG DESCRIPTION FORMAT , Script Name: Script_<JIRA_ID>.spec.ts, Test Case: <FAILED_TEST_TITLE>,
@@ -509,7 +603,7 @@ Never output STOP or Proceed — only QALead uses those.
             
             BUG CREATION RULE
             Create one bug for each failed test case.
-             Use the filesystem MCP `write_file` tool to write or overwrite the file IF it already exists."
+            Use the filesystem MCP `write_file` tool to write or overwrite the file IF it already exists."
             Bug fields must be generated as follows:
             Issue Type: Bug
             Summary: <JIRA_TICKET_ID>_<FAILED_TEST_TITLE>
@@ -519,7 +613,7 @@ Never output STOP or Proceed — only QALead uses those.
             Environment: Playwright Automation Execution
             Execution Time: <timestamp if available>
             Error Message: <error message>
-            Expected Result: Application should behave as defined in the test case.
+            Expected Result: expected result from the test case file.
             Actual Result: Application produced the error captured during test execution.
             
             Example structure inside the bug logged in jira:
@@ -753,7 +847,7 @@ No agent name, no colon, no period, no markdown, no spaces, no explanation — o
                 flush=True,
             )
 
-    # ── Token usage summary ──────────────────────────────────────────────────
+   # ── Token usage summary ──────────────────────────────────────────────────
     usage = model_client.total_usage()
     prompt_tokens      = usage.prompt_tokens
     completion_tokens  = usage.completion_tokens
@@ -768,6 +862,8 @@ No agent name, no colon, no period, no markdown, no spaces, no explanation — o
     print(f"  Total tokens      : {total_tokens:>10,}")
     print(f"  Estimated cost    : ${cost_usd:>10.4f}  (gpt-4o-mini)")
     print("═" * 52 + "\n")
+
+
 
 
 if __name__ == "__main__":

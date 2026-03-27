@@ -33,6 +33,35 @@ def _fuzzy_match(a: str, b: str) -> bool:
     return len(wa & wb) / min(len(wa), len(wb)) > 0.5
 
 
+def failed_playwright_title_matches_tc(tc_id: str, tc_title: str, playwright_failed_title: str) -> bool:
+    """
+    True if a row in execution.json failed_test_details applies to this test case.
+
+    Playwright titles look like: 'Negative: EC-298-TC-002 — Unsuccessful Login...'
+    Manual tc title is often only 'Unsuccessful Login...' — never exact match.
+
+    Rules:
+    1) If the failure title contains this testcase_id (EC-298-TC-002), it matches.
+    2) If the failure title mentions any EC-xxx-TC-nnn id(s) but not this one, do NOT fuzzy-match
+       (avoids Boundary TC wrongly marked failed against Edge TC-004's failure).
+    3) If the failure title has no TC id pattern, fall back to fuzzy title match (legacy).
+    """
+    if not playwright_failed_title or not tc_id:
+        return False
+    tid = re.sub(r"\s+", "", tc_id.strip().lower())
+    fl = playwright_failed_title.lower()
+    fl_nospace = re.sub(r"\s+", "", fl)
+    if tid in fl_nospace or tid in fl:
+        return True
+    ids_in_ft = set(re.findall(r"ec-\d+-tc-\d+", fl, flags=re.I))
+    for x in ids_in_ft:
+        if re.sub(r"\s+", "", x.lower()) == tid:
+            return True
+    if ids_in_ft:
+        return False
+    return _fuzzy_match(tc_title or "", playwright_failed_title)
+
+
 def db_sync_testcases(ticket_id: str) -> None:
     """Sync TestCases/<id>_Testcase.txt → test_cases, user_stories, projects tables."""
     if not _DB_AVAILABLE or _sync_tc_fn is None:
@@ -90,6 +119,7 @@ def db_sync_execution(ticket_id: str) -> None:
         data = json.loads(exec_path.read_text(encoding="utf-8"))
         failed_details = data.get("failed_test_details", [])
         failed_titles: list[str] = [d.get("title", "").lower() for d in failed_details]
+        failed_title_original: list[str] = [d.get("title", "") for d in failed_details]
         failed_errors: dict[str, str] = {d.get("title", "").lower(): d.get("error_message", "") for d in failed_details}
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         report_ref = f"ResultReport/execution_{ticket_id}.json"
@@ -100,19 +130,19 @@ def db_sync_execution(ticket_id: str) -> None:
                 log.warning("No DB test cases for %s – skipping execution sync", ticket_id)
                 return
             for tc_id, tc_title in tc_rows:
-                # Match failed test titles by TC ID (e.g. "EC-298-TC-001" appears in title)
-                # or by fuzzy title match. TC ID format is now <JIRA>-TC-NNN.
-                tc_id_lower = tc_id.lower()
                 tc_failed = any(
-                    tc_id_lower in ft or _fuzzy_match(tc_title, ft)
-                    for ft in failed_titles
+                    failed_playwright_title_matches_tc(tc_id, tc_title, ft_orig)
+                    for ft_orig in failed_title_original
+                    if ft_orig
                 )
                 exec_status = "FAILED" if tc_failed else "PASSED"
                 error_msg = ""
                 if tc_failed:
-                    for ft in failed_titles:
-                        if tc_id_lower in ft or _fuzzy_match(tc_title, ft):
-                            error_msg = failed_errors.get(ft, "")
+                    for ft_orig in failed_title_original:
+                        if not ft_orig:
+                            continue
+                        if failed_playwright_title_matches_tc(tc_id, tc_title, ft_orig):
+                            error_msg = failed_errors.get(ft_orig.lower(), "")
                             break
                 conn.execute("DELETE FROM execution_results WHERE testcase_id = ?", (tc_id,))
                 conn.execute(

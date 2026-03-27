@@ -1,0 +1,8 @@
+Summary of Test Execution for EC-318:
+Total Tests Run: 4
+Passed Tests: 3
+Failed Tests: 1
+
+Failed Test Details:
+1. Negative: EC-318-TC-002 — Cart Cleanup and Continue Shopping - Negative Flow (Invalid Credentials):
+   Error: Epic sadface: Username and password do not match any user in this service.

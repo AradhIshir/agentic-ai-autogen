@@ -1,0 +1,1 @@
+{"jira_ticket_id": "EC-344", "total_tests": 1, "passed_tests": 0, "failed_tests": 1, "failed_test_details": [{"title": "Positive: EC-344-TC-001 — Successful Checkout Information Entry", "error_message": "TimeoutError: locator.waitFor: Timeout 20000ms exceeded. Call log:  - waiting for getByText('inventory.html').first() to be visible"}]}

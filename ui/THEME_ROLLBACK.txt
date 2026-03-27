@@ -1,0 +1,9 @@
+UI themes (visual only; no behavior change)
+
+  Default (light sidebar + white app header):
+    streamlit run ui/app.py
+
+  Black sidebar + black app header (corporate B&W):
+    ISHIR_UI_THEME=corporate streamlit run ui/app.py
+
+Snapshot before theme work: git history on ui/app.py (search: _inject_ishir_css, ISHIR_UI_THEME).

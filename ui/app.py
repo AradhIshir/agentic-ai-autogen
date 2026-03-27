@@ -4,6 +4,13 @@ Triggers execution of backend/UStoAutomationBug.py (Autogen + MCP agents).
 All outputs (test cases, scripts, execution results, bugs) are saved under AgenticAIAutogen.
 """
 
+import streamlit as st
+
+if not st.session_state.get("logged_in"):
+    st.switch_page("pages/_Login.py")
+    st.stop()
+
+import html
 import json
 import os
 import signal
@@ -13,7 +20,12 @@ import sys
 import threading
 import time
 
-import streamlit as st
+import streamlit.components.v1 as components
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None  # type: ignore
 
 try:
     from db import get_connection
@@ -88,9 +100,169 @@ ISHIR_GRAY_BORDER  = "#E0E0E0"   # subtle borders
 ISHIR_TEXT_DARK    = "#111111"   # primary text
 ISHIR_TEXT_MUTED   = "#555555"   # captions / secondary text
 
+# Visual theme only. Default: legacy (light sidebar). Corporate B&W: ISHIR_UI_THEME=corporate streamlit run ui/app.py
+ISHIR_UI_THEME = os.environ.get("ISHIR_UI_THEME", "legacy").strip().lower()
+if ISHIR_UI_THEME not in ("legacy", "corporate"):
+    ISHIR_UI_THEME = "legacy"
+
+
+def _is_corporate_theme() -> bool:
+    return ISHIR_UI_THEME == "corporate"
+
+
+def _theme_tokens() -> dict[str, str]:
+    """Token values for _inject_ishir_css. legacy ≈ original Streamlit light UI before corporate refresh."""
+    gb, gs, gbd = ISHIR_GRAY_BG, ISHIR_GRAY_SIDEBAR, ISHIR_GRAY_BORDER
+    w, td = ISHIR_WHITE, ISHIR_TEXT_DARK
+    if ISHIR_UI_THEME == "legacy":
+        return {
+            "app_bg": gb,
+            "main_shadow": "0 1px 4px rgba(0,0,0,0.08)",
+            "sidebar_bg": gs,
+            "sidebar_edge": gbd,
+            "sidebar_fg": td,
+            "sidebar_btn_bg": w,
+            "sidebar_btn_border": gbd,
+            "sidebar_btn_hover_bg": gb,
+            "main_border": gbd,
+            "hover_fill": gb,
+            "metric_bg": gb,
+            "metric_edge": gbd,
+            "toolbar_hover": gb,
+            "header_bg": w,
+            "header_fg": td,
+            "collapse_btn_bg": w,
+            "collapse_btn_border": gbd,
+            "hr_sidebar": gbd,
+            "metric_extra": "",
+        }
+    return {
+        "app_bg": "#E8EEF5",
+        "main_shadow": "0 4px 24px rgba(11,31,58,0.07)",
+        "sidebar_bg": "#0B1F3A",
+        "sidebar_edge": "rgba(148,163,184,0.22)",
+        "sidebar_fg": "#F1F5F9",
+        "sidebar_btn_bg": "transparent",
+        "sidebar_btn_border": "rgba(248,250,252,0.55)",
+        "sidebar_btn_hover_bg": "rgba(255,255,255,0.08)",
+        "main_border": "#E2E8F0",
+        "hover_fill": "#EEF2F7",
+        "metric_bg": "#FFFFFF",
+        "metric_edge": "#E2E8F0",
+        "toolbar_hover": "#F1F5F9",
+        "header_bg": "#0B1F3A",
+        "header_fg": "#F8FAFC",
+        "collapse_btn_bg": "#1E3A5F",
+        "collapse_btn_border": "rgba(148,163,184,0.4)",
+        "hr_sidebar": "rgba(148,163,184,0.25)",
+        "metric_extra": "border-left: 4px solid #FFD400 !important;",
+    }
+
+
+def _profile_initials(full_name: str) -> str:
+    parts = (full_name or "").split()
+    letters = "".join(p[0].upper() for p in parts[:2] if p)
+    return letters or "?"
+
+
+# Role-based sidebar navigation (Run pipeline = agent pipeline page)
+_NAV_ALL = ["Dashboard", "Test Repository", "Run pipeline"]
+
+
+def _nav_options_for_role(role: str | None) -> list[str]:
+    r = (role or "").strip().lower()
+    if r == "admin":
+        return list(_NAV_ALL)
+    if r == "qa_lead":
+        return list(_NAV_ALL)
+    if r == "developer":
+        return ["Dashboard", "Test Repository"]
+    return ["Dashboard", "Test Repository"]
+
+
+def _inject_sidebar_expand_fallback() -> None:
+    """
+    When the sidebar is collapsed, Streamlit's built-in expand control can be missing or
+    hard to see. Fixed ☰ clicks the native expand control (same as Streamlit's chevron).
+    """
+    T = _theme_tokens()
+    _fab_bg = T["collapse_btn_bg"]
+    _fab_border = T["collapse_btn_border"]
+    _fab_fg = T["header_fg"]
+    components.html(
+        f"""
+<script>
+(function () {{
+  try {{
+    var doc = window.parent.document;
+    if (!doc) return;
+    if (doc.getElementById("ishir-sidebar-expand-fab")) return;
+    var btn = doc.createElement("button");
+    btn.id = "ishir-sidebar-expand-fab";
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Open navigation menu");
+    btn.innerHTML = "&#9776;";
+    btn.title = "Open menu";
+    var s = btn.style;
+    s.cssText =
+      "position:fixed!important;top:14px!important;left:10px!important;z-index:1000030!important;" +
+      "width:44px!important;height:44px!important;border-radius:10px!important;cursor:pointer!important;" +
+      "border:1.5px solid {_fab_border}!important;background:{_fab_bg}!important;color:{_fab_fg}!important;" +
+      "font-size:1.4rem!important;line-height:1!important;box-shadow:0 2px 12px rgba(0,0,0,0.15)!important;" +
+      "display:none!important;align-items:center!important;justify-content:center!important;padding:0!important;";
+    btn.onmouseenter = function () {{
+      btn.style.borderColor = "#FFD400";
+      btn.style.background = "rgba(255,212,0,0.2)";
+    }};
+    btn.onmouseleave = function () {{
+      btn.style.borderColor = "{_fab_border}";
+      btn.style.background = "{_fab_bg}";
+    }};
+    function clickNativeExpand() {{
+      var root = doc;
+      var t =
+        root.querySelector('[data-testid="stSidebarCollapsedControl"] button') ||
+        root.querySelector('[data-testid="stSidebarCollapsedControl"]') ||
+        root.querySelector('[data-testid="collapsedControl"] button') ||
+        root.querySelector('button[kind="headerNoPadding"]');
+      if (t) t.click();
+    }}
+    btn.onclick = clickNativeExpand;
+    function syncVisibility() {{
+      var side = doc.querySelector('section[data-testid="stSidebar"]');
+      var w = side ? side.getBoundingClientRect().width : 0;
+      btn.style.display = w < 12 ? "flex" : "none";
+    }}
+    doc.body.appendChild(btn);
+    syncVisibility();
+    setInterval(syncVisibility, 400);
+  }} catch (e) {{}}
+}})();
+</script>
+        """,
+        height=0,
+        width=0,
+    )
+
 
 def _inject_ishir_css():
-    """Apply ISHIR brand styling matching ishir.com — white/light theme, yellow accents. No behavior change."""
+    """ISHIR brand CSS. Themes: ISHIR_UI_THEME=corporate (navy sidebar, ishir.com-style) | legacy (rollback)."""
+    T = _theme_tokens()
+    _corp = _is_corporate_theme()
+    _radio_accent = ""
+    if _corp:
+        _radio_accent = """
+        section[data-testid="stSidebar"] [role="radiogroup"] > div > label {
+            border-left: 3px solid transparent !important;
+            border-radius: 8px !important;
+            margin: 2px 0 !important;
+            padding: 0.45rem 0.5rem 0.45rem 0.55rem !important;
+        }
+        section[data-testid="stSidebar"] [role="radiogroup"] [aria-checked="true"] {
+            background: rgba(255,212,0,0.14) !important;
+            border-left: 3px solid #FFD400 !important;
+        }
+        """
     st.markdown(
         f"""
         <style>
@@ -99,7 +271,7 @@ def _inject_ishir_css():
             font-size: 17px !important;
         }}
         .stApp {{
-            background-color: {ISHIR_GRAY_BG} !important;
+            background-color: {T["app_bg"]} !important;
             color: {ISHIR_TEXT_DARK} !important;
             font-family: 'Inter', 'Segoe UI', Arial, sans-serif !important;
             font-size: 1rem !important;
@@ -110,21 +282,25 @@ def _inject_ishir_css():
             background-color: {ISHIR_WHITE} !important;
             border-radius: 12px !important;
             padding: 2rem 2.5rem !important;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.08) !important;
+            box-shadow: {T["main_shadow"]} !important;
         }}
 
         /* ── Sidebar ──────────────────────────────────────────────────────── */
         section[data-testid="stSidebar"] {{
-            background-color: {ISHIR_GRAY_SIDEBAR} !important;
-            border-right: 1px solid {ISHIR_GRAY_BORDER} !important;
+            background-color: {T["sidebar_bg"]} !important;
+            border-right: 1px solid {T["sidebar_edge"]} !important;
         }}
         section[data-testid="stSidebar"] * {{
-            color: {ISHIR_TEXT_DARK} !important;
+            color: {T["sidebar_fg"]} !important;
         }}
         section[data-testid="stSidebar"] .stRadio label {{
-            color: {ISHIR_TEXT_DARK} !important;
+            color: {T["sidebar_fg"]} !important;
             font-weight: 500 !important;
         }}
+        section[data-testid="stSidebar"] hr {{
+            border-color: {T["hr_sidebar"]} !important;
+        }}
+        {_radio_accent}
 
         /* ── Text & headings ──────────────────────────────────────────────── */
         h1, h2, h3, h4, h5, h6 {{
@@ -177,33 +353,33 @@ def _inject_ishir_css():
             background: {ISHIR_WHITE} !important;
             color: {ISHIR_BLACK} !important;
             font-weight: 700 !important;
-            border: 1.5px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1.5px solid {T["main_border"]} !important;
             border-radius: 6px !important;
         }}
         .stButton > button:not([kind="primary"]):hover {{
-            background: {ISHIR_GRAY_BG} !important;
+            background: {T["hover_fill"]} !important;
             border-color: {ISHIR_YELLOW} !important;
             color: {ISHIR_BLACK} !important;
         }}
 
         /* ── Sidebar buttons stay neutral ─────────────────────────────────── */
         section[data-testid="stSidebar"] .stButton > button {{
-            background: {ISHIR_WHITE} !important;
-            color: {ISHIR_TEXT_DARK} !important;
+            background: {T["sidebar_btn_bg"]} !important;
+            color: {T["sidebar_fg"]} !important;
             font-weight: 600 !important;
-            border: 1.5px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1.5px solid {T["sidebar_btn_border"]} !important;
             border-radius: 6px !important;
         }}
         section[data-testid="stSidebar"] .stButton > button:hover {{
             border-color: {ISHIR_YELLOW} !important;
-            background: {ISHIR_GRAY_BG} !important;
+            background: {T["sidebar_btn_hover_bg"]} !important;
         }}
 
         /* ── Input fields ─────────────────────────────────────────────────── */
         .stTextInput input, .stSelectbox select, textarea {{
             background-color: {ISHIR_WHITE} !important;
             color: {ISHIR_TEXT_DARK} !important;
-            border: 1.5px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1.5px solid {T["main_border"]} !important;
             border-radius: 6px !important;
         }}
         .stTextInput input:focus, .stSelectbox select:focus {{
@@ -216,7 +392,7 @@ def _inject_ishir_css():
         /* Outer wrapper */
         [data-testid="stExpander"] {{
             background-color: {ISHIR_WHITE} !important;
-            border: 1px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1px solid {T["main_border"]} !important;
             border-radius: 8px !important;
             overflow: hidden !important;
         }}
@@ -233,7 +409,7 @@ def _inject_ishir_css():
             list-style: none !important;
         }}
         details > summary:hover {{
-            background-color: {ISHIR_GRAY_BG} !important;
+            background-color: {T["hover_fill"]} !important;
             color: {ISHIR_TEXT_DARK} !important;
         }}
 
@@ -247,7 +423,7 @@ def _inject_ishir_css():
         }}
         details > summary:hover > div,
         details > summary:hover span {{
-            background-color: {ISHIR_GRAY_BG} !important;
+            background-color: {T["hover_fill"]} !important;
             color: {ISHIR_TEXT_DARK} !important;
         }}
 
@@ -269,10 +445,11 @@ def _inject_ishir_css():
 
         /* ── Metric cards ─────────────────────────────────────────────────── */
         [data-testid="stMetric"] {{
-            background: {ISHIR_GRAY_BG} !important;
+            background: {T["metric_bg"]} !important;
             border-radius: 8px !important;
             padding: 0.75rem 1rem !important;
-            border: 1px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1px solid {T["metric_edge"]} !important;
+            {T["metric_extra"]}
         }}
         [data-testid="stMetricLabel"] {{
             color: {ISHIR_TEXT_MUTED} !important;
@@ -295,7 +472,7 @@ def _inject_ishir_css():
 
         /* ── Dataframe / tables — including toolbar, search, sort buttons ── */
         [data-testid="stDataFrame"] {{
-            border: 1px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1px solid {T["main_border"]} !important;
             border-radius: 8px !important;
         }}
         /* Toolbar: always visible, floated above the table top-right ──────── */
@@ -307,7 +484,7 @@ def _inject_ishir_css():
             right: 0 !important;
             z-index: 9999 !important;
             background-color: {ISHIR_WHITE} !important;
-            border: 1.5px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1.5px solid {T["main_border"]} !important;
             border-radius: 8px !important;
             padding: 4px 8px !important;
             box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
@@ -337,20 +514,20 @@ def _inject_ishir_css():
             fill: {ISHIR_TEXT_DARK} !important;
         }}
         [data-testid="stElementToolbar"] button:hover {{
-            background-color: {ISHIR_GRAY_BG} !important;
+            background-color: {T["toolbar_hover"]} !important;
             outline: 1.5px solid {ISHIR_YELLOW} !important;
         }}
         /* Search input inside toolbar */
         [data-testid="stElementToolbar"] input {{
             background-color: {ISHIR_WHITE} !important;
             color: {ISHIR_TEXT_DARK} !important;
-            border: 1px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1px solid {T["main_border"]} !important;
             border-radius: 4px !important;
         }}
         /* Glide-data-grid sort arrows */
         .dvn-scroller,
         .dvn-scroller * {{
-            scrollbar-color: {ISHIR_GRAY_BORDER} {ISHIR_WHITE} !important;
+            scrollbar-color: {T["main_border"]} {ISHIR_WHITE} !important;
         }}
 
         /* ── Info / warning / success boxes ───────────────────────────────── */
@@ -360,14 +537,14 @@ def _inject_ishir_css():
 
         /* ── Dividers ─────────────────────────────────────────────────────── */
         hr {{
-            border-color: {ISHIR_GRAY_BORDER} !important;
+            border-color: {T["main_border"]} !important;
         }}
 
         /* ── Selectbox trigger — white background, dark text ──────────────── */
         [data-testid="stSelectbox"] > div > div {{
             background-color: {ISHIR_WHITE} !important;
             color: {ISHIR_TEXT_DARK} !important;
-            border: 1.5px solid {ISHIR_GRAY_BORDER} !important;
+            border: 1.5px solid {T["main_border"]} !important;
             border-radius: 6px !important;
         }}
         [data-testid="stSelectbox"] span,
@@ -406,7 +583,7 @@ def _inject_ishir_css():
         }}
         [role="option"]:hover,
         [aria-selected="true"][role="option"] {{
-            background-color: {ISHIR_GRAY_BG} !important;
+            background-color: {T["hover_fill"]} !important;
             color: {ISHIR_TEXT_DARK} !important;
         }}
         /* Scrollbar in dropdown */
@@ -418,10 +595,47 @@ def _inject_ishir_css():
             background-color: {ISHIR_WHITE} !important;
             color: {ISHIR_TEXT_DARK} !important;
         }}
+
+        /* ── App header + collapsed sidebar expand control ─────────────────── */
+        header[data-testid="stHeader"] {{
+            overflow: visible !important;
+            background-color: {T["header_bg"]} !important;
+            border-bottom: 1px solid {T["main_border"]} !important;
+        }}
+        header[data-testid="stHeader"] * {{
+            color: {T["header_fg"]} !important;
+        }}
+        header[data-testid="stHeader"] svg {{
+            fill: {T["header_fg"]} !important;
+        }}
+        [data-testid="stDecoration"] {{
+            overflow: visible !important;
+        }}
+        [data-testid="stSidebarCollapsedControl"] {{
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            z-index: 1000025 !important;
+            position: relative !important;
+        }}
+        [data-testid="stSidebarCollapsedControl"] button {{
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            background-color: {T["collapse_btn_bg"]} !important;
+            color: {T["header_fg"]} !important;
+            border: 1.5px solid {T["collapse_btn_border"]} !important;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.12) !important;
+        }}
+        [data-testid="collapsedControl"] {{
+            z-index: 1000025 !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
+    _inject_sidebar_expand_fallback()
 
 # Folders under AgenticAIAutogen where pipeline saves files
 FOLDERS = {
@@ -676,6 +890,18 @@ def _load_project_names() -> dict[str, str]:
     return {}
 
 
+def _load_project_names_from_db() -> dict[str, str]:
+    """project_key -> project_name from qa_testing.db projects table."""
+    if get_connection is None:
+        return {}
+    try:
+        with get_connection() as conn:
+            cur = conn.execute("SELECT project_key, project_name FROM projects ORDER BY project_key")
+            return {str(r[0]): (r[1] or r[0]) for r in cur.fetchall()}
+    except Exception:
+        return {}
+
+
 def _jira_id_to_project_key(jira_id: str) -> str:
     """EC-298 -> EC (prefix before first hyphen)."""
     if "-" in jira_id:
@@ -685,84 +911,160 @@ def _jira_id_to_project_key(jira_id: str) -> str:
 
 def get_dashboard_data() -> list[dict]:
     """
-    Scan TestCases + ResultReport and return one row per project:
-    project_name, total_us, test_cases_created, executed, passed, failed.
+    One row per User Story (jira_id) from qa_testing.db:
+    project display name, US#, test_cases rows, distinct executed/passed/failed (execution_results).
+    Project labels: merge projects table + dashboard_config.json (JSON overrides DB).
     """
-    project_names = _load_project_names()
-    # Collect per–Jira ID: has_testcase_file, total_tests, passed_tests, failed_tests
-    jira_metrics: dict[str, dict] = {}
+    if get_connection is None:
+        return []
+    # DB first, then dashboard_config.json on top (custom names win)
+    project_names = {**_load_project_names_from_db(), **_load_project_names()}
+    try:
+        with get_connection() as conn:
+            cur = conn.execute(
+                """
+                WITH jira_list AS (
+                    SELECT DISTINCT jira_id FROM user_stories
+                    UNION
+                    SELECT DISTINCT jira_id FROM test_cases
+                ),
+                us_map AS (
+                    SELECT jira_id, MAX(project_key) AS project_key
+                    FROM user_stories
+                    GROUP BY jira_id
+                )
+                SELECT
+                    jl.jira_id,
+                    um.project_key,
+                    COALESCE((
+                        SELECT COUNT(DISTINCT t.testcase_id)
+                        FROM test_cases t
+                        WHERE t.jira_id = jl.jira_id
+                    ), 0),
+                    COALESCE((
+                        SELECT COUNT(DISTINCT t.testcase_id)
+                        FROM test_cases t
+                        INNER JOIN execution_results e ON e.testcase_id = t.testcase_id
+                        WHERE t.jira_id = jl.jira_id
+                    ), 0),
+                    COALESCE((
+                        SELECT COUNT(DISTINCT t.testcase_id)
+                        FROM test_cases t
+                        INNER JOIN execution_results e ON e.testcase_id = t.testcase_id
+                            AND UPPER(TRIM(COALESCE(e.execution_status, ''))) = 'PASSED'
+                        WHERE t.jira_id = jl.jira_id
+                    ), 0),
+                    COALESCE((
+                        SELECT COUNT(DISTINCT t.testcase_id)
+                        FROM test_cases t
+                        INNER JOIN execution_results e ON e.testcase_id = t.testcase_id
+                            AND UPPER(TRIM(COALESCE(e.execution_status, ''))) = 'FAILED'
+                        WHERE t.jira_id = jl.jira_id
+                    ), 0)
+                FROM jira_list jl
+                LEFT JOIN us_map um ON um.jira_id = jl.jira_id
+                ORDER BY COALESCE(um.project_key, ''), jl.jira_id
+                """
+            )
+            rows: list[dict] = []
+            for r in cur.fetchall():
+                jid = r[0]
+                pkey_raw = r[1]
+                n_created, n_executed, n_passed, n_failed = (int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), int(r[5] or 0))
+                pkey = (pkey_raw or "").strip() or _jira_id_to_project_key(jid)
+                display = project_names.get(pkey, pkey)
+                rows.append(
+                    {
+                        "Project": display,
+                        "US#": jid,
+                        "Test cases created": n_created,
+                        "Executed": n_executed,
+                        "Passed": n_passed,
+                        "Failed": n_failed,
+                    }
+                )
+            return rows
+    except Exception:
+        return []
 
-    # Test case files: each file = one User Story
-    tc_dir = FOLDERS["test_cases"]
-    if os.path.isdir(tc_dir):
-        for name in os.listdir(tc_dir):
-            if name.endswith("_Testcase.txt"):
-                jira_id = name.replace("_Testcase.txt", "").strip()
-                if jira_id not in jira_metrics:
-                    jira_metrics[jira_id] = {"total_tests": 0, "passed_tests": 0, "failed_tests": 0, "has_testcase": False}
-                jira_metrics[jira_id]["has_testcase"] = True
 
-    # Execution results
-    res_dir = FOLDERS["results"]
-    if os.path.isdir(res_dir):
-        for name in os.listdir(res_dir):
-            if name.startswith("execution_") and name.endswith(".json"):
-                jira_id = name.replace("execution_", "").replace(".json", "").strip()
-                if jira_id not in jira_metrics:
-                    jira_metrics[jira_id] = {"total_tests": 0, "passed_tests": 0, "failed_tests": 0, "has_testcase": False}
-                try:
-                    with open(os.path.join(res_dir, name), "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    jira_metrics[jira_id]["total_tests"] = data.get("total_tests", 0)
-                    jira_metrics[jira_id]["passed_tests"] = data.get("passed_tests", 0)
-                    jira_metrics[jira_id]["failed_tests"] = data.get("failed_tests", 0)
-                except Exception:
-                    pass
-
-    # Aggregate by project key (each Jira ID with any artifact = 1 User Story)
-    by_project: dict[str, dict] = {}
-    for jira_id, m in jira_metrics.items():
-        key = _jira_id_to_project_key(jira_id)
-        if key not in by_project:
-            by_project[key] = {"total_us": 0, "test_cases_created": 0, "executed": 0, "passed": 0, "failed": 0, "jira_ids": set()}
-        by_project[key]["jira_ids"].add(jira_id)
-        by_project[key]["test_cases_created"] += m.get("total_tests", 0)
-        by_project[key]["executed"] += m.get("total_tests", 0)
-        by_project[key]["passed"] += m.get("passed_tests", 0)
-        by_project[key]["failed"] += m.get("failed_tests", 0)
-    for key in by_project:
-        by_project[key]["total_us"] = len(by_project[key]["jira_ids"])
-        del by_project[key]["jira_ids"]
-
-    rows = []
-    for key in sorted(by_project.keys()):
-        r = by_project[key]
-        rows.append({
-            "Project": project_names.get(key, key),
-            "Total # US": r["total_us"],
-            "Test cases created": r["test_cases_created"],
-            "Executed": r["executed"],
-            "Passed": r["passed"],
-            "Failed": r["failed"],
-        })
-    return rows
+def _style_dashboard_table(rows: list[dict]):
+    """ISHIR yellow header + larger type for QA Dashboard table only (pandas Styler)."""
+    if pd is None or not rows:
+        return None
+    try:
+        df = pd.DataFrame(rows)
+        sty = (
+            df.style.hide(axis="index")
+            .set_table_styles(
+                [
+                    {
+                        "selector": "table",
+                        "props": [
+                            ("border", f"2px solid {ISHIR_YELLOW}"),
+                            ("border-collapse", "collapse"),
+                        ],
+                    },
+                    {
+                        "selector": "thead th",
+                        "props": [
+                            ("background-color", ISHIR_YELLOW),
+                            ("color", ISHIR_BLACK),
+                            ("font-weight", "700"),
+                            ("font-size", "1.125rem"),
+                            ("padding", "0.65rem 1rem"),
+                            ("border-bottom", f"3px solid {ISHIR_BLACK}"),
+                            ("text-align", "left"),
+                        ],
+                    },
+                    {
+                        "selector": "tbody td",
+                        "props": [
+                            ("font-size", "1.0625rem"),
+                            ("padding", "0.65rem 1rem"),
+                            ("line-height", "1.45"),
+                        ],
+                    },
+                    {
+                        "selector": "tbody tr td:first-child",
+                        "props": [
+                            ("border-left", f"4px solid {ISHIR_YELLOW}"),
+                            ("padding-left", "0.85rem"),
+                        ],
+                    },
+                ],
+                overwrite=False,
+            )
+        )
+        return sty
+    except Exception:
+        return None
 
 
 def _render_dashboard():
-    """Dashboard: list of projects with Total US, Test cases created, Executed, Passed, Failed."""
+    """Dashboard: one row per User Story (US#) with Test cases created, Executed, Passed, Failed."""
     st.title("QA Dashboard")
     st.markdown("Overview of all projects: User Stories, test cases created, and execution results.")
     st.divider()
 
-    rows = get_dashboard_data()
-    if not rows:
-        st.info("No project data yet. Run the pipeline for at least one Jira ticket (e.g. EC-298), then come back here.")
-        st.caption("Data is read from TestCases and ResultReport folders in AgenticAIAutogen.")
+    if get_connection is None:
+        st.error("Database connection is not available. Ensure `db.py` exists and `db/qa_testing.db` is reachable.")
         return
 
-    st.dataframe(rows, width="stretch", hide_index=True)
+    rows = get_dashboard_data()
+    if not rows:
+        st.info(
+            "No dashboard rows yet. Populate **user_stories** and **test_cases** in `qa_testing.db` "
+            "(e.g. run the pipeline and DB sync, or use testcase sync)."
+        )
+        st.caption("Dashboard reads only from the QA SQLite database — not from TestCases/ResultReport folders.")
+        return
 
-    st.caption("To add or rename projects, edit dashboard_config.json in the project folder (e.g. add a project key and display name like \"Excellence board\").")
+    styled = _style_dashboard_table(rows)
+    if styled is not None:
+        st.dataframe(styled, width="stretch", hide_index=True)
+    else:
+        st.dataframe(rows, width="stretch", hide_index=True)
 
 
 # ----- Test Repository: DB-backed QA artifact queries -----
@@ -1040,7 +1342,6 @@ def _render_test_repository():
                     "Test Case ID": tc["testcase_id"],
                     "Title": (tc["title"] or "")[:50] + ("…" if len(tc.get("title") or "") > 50 else ""),
                     "Priority": tc["priority"],
-                    "Status": tc["status"],
                     "Automation": tc["automation_status"],
                     "Last Execution": tc["last_execution_status"],
                     "Last Run": (tc["last_execution_date"] or "—")[:19] if tc.get("last_execution_date") else "—",
@@ -1101,12 +1402,28 @@ def _render_test_repository():
 
 
 def _render_ishir_page_header() -> None:
-    """Render ISHIR branded page header (title bar only) — visual only."""
+    """Render ISHIR branded strip above page content — visual only."""
+    if _is_corporate_theme():
+        st.markdown(
+            """
+            <div style="padding:0.35rem 0 1rem 0; margin-bottom:1rem;
+                        border-bottom:2px solid #FFD400;">
+              <span style="font-size:1.05rem; font-weight:800; color:#111;">
+                ISHIR Autonomous QA Platform
+              </span>
+              <span style="font-size:0.88rem; color:#64748B; font-weight:500;">
+                &nbsp;·&nbsp;Accelerating Software Quality with AI Agents
+              </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
     st.markdown(
         """
         <div style="padding:1.25rem 0 1rem 0; border-bottom:3px solid #FFD400; margin-bottom:1.5rem;">
           <div style="font-size:1.6rem; font-weight:800; color:#111; line-height:1.2;">
-            Autonomous QA Platform
+            ISHIR Autonomous QA Platform
           </div>
           <div style="font-size:0.85rem; color:#555; margin-top:4px;">
             Accelerating Software Quality with AI Agents
@@ -1137,39 +1454,109 @@ def _render_ishir_footer() -> None:
 
 
 def main():
-    st.set_page_config(
-        page_title="ISHIR Autonomous QA Platform",
-        page_icon="🤖",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
+    # show_sidebar_navigation: Streamlit ≥1.36 — hides auto "app" / pages links (see .streamlit/config.toml too)
+    try:
+        st.set_page_config(
+            page_title="ISHIR Autonomous QA Platform",
+            page_icon="🤖",
+            layout="wide",
+            initial_sidebar_state="expanded",
+            show_sidebar_navigation=False,
+        )
+    except TypeError:
+        st.set_page_config(
+            page_title="ISHIR Autonomous QA Platform",
+            page_icon="🤖",
+            layout="wide",
+            initial_sidebar_state="expanded",
+        )
 
-    # ----- Sidebar: ISHIR branding then navigation -----
-    st.sidebar.markdown(
-        """
-        <div style="padding: 0.5rem 0 0.25rem 0;">
-          <div style="line-height:1;">
-            <span style="font-size:1.5rem; font-weight:900; color:#111; letter-spacing:-1px;">
-              <span style="position:relative; display:inline-block;">
-                i<span style="position:absolute; top:-4px; left:50%; transform:translateX(-50%);
-                       width:6px; height:6px; background:#FFD400; border-radius:50%;
-                       display:block;"></span>
-              </span>SHIR
-            </span>
-          </div>
-          <div style="font-size:0.72rem; color:#555; margin-top:2px; letter-spacing:0.5px;">
-            26 Years of Delivering Innovation
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # ----- Sidebar: logo top, then menu, then profile + Logout -----
+    if _is_corporate_theme():
+        st.sidebar.markdown(
+            """
+            <div style="padding: 0.5rem 0 0.25rem 0;">
+              <div style="line-height:1;">
+                <span style="font-size:1.5rem; font-weight:900; color:#F8FAFC; letter-spacing:-1px;">
+                  <span style="position:relative; display:inline-block;">
+                    i<span style="position:absolute; top:-4px; left:50%; transform:translateX(-50%);
+                           width:6px; height:6px; background:#FFD400; border-radius:50%;
+                           display:block;"></span>
+                  </span>SHIR
+                </span>
+              </div>
+              <div style="font-size:0.72rem; color:#94A3B8; margin-top:2px; letter-spacing:0.5px;">
+                26 Years of Delivering Innovation
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.sidebar.markdown(
+            """
+            <div style="padding: 0.5rem 0 0.25rem 0;">
+              <div style="line-height:1;">
+                <span style="font-size:1.5rem; font-weight:900; color:#111; letter-spacing:-1px;">
+                  <span style="position:relative; display:inline-block;">
+                    i<span style="position:absolute; top:-4px; left:50%; transform:translateX(-50%);
+                           width:6px; height:6px; background:#FFD400; border-radius:50%;
+                           display:block;"></span>
+                  </span>SHIR
+                </span>
+              </div>
+              <div style="font-size:0.72rem; color:#555; margin-top:2px; letter-spacing:0.5px;">
+                26 Years of Delivering Innovation
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     st.sidebar.markdown("---")
+    _nav = _nav_options_for_role(st.session_state.get("user_role"))
+    if _is_corporate_theme():
+        st.sidebar.markdown(
+            '<p style="font-size:0.65rem;letter-spacing:0.14em;color:#94A3B8;'
+            'text-transform:uppercase;margin:0 0 0.4rem 0;font-weight:600;">Menu</p>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.sidebar.markdown("**Menu**")
     page = st.sidebar.radio(
         "Go to",
-        ["Run pipeline", "Dashboard", "Test Repository"],
+        _nav,
         label_visibility="collapsed",
     )
+    st.sidebar.markdown("---")
+    _fn = st.session_state.get("full_name", "") or ""
+    _role = st.session_state.get("user_role", "") or ""
+    if _is_corporate_theme():
+        _ini = html.escape(_profile_initials(_fn))
+        st.sidebar.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:12px;margin:4px 0 10px 0;">
+              <div style="min-width:42px;width:42px;height:42px;border-radius:50%;
+                   background:linear-gradient(145deg,#FFD400,#E6AC00);
+                   display:flex;align-items:center;justify-content:center;
+                   font-weight:800;color:#111;font-size:0.82rem;letter-spacing:0.02em;">
+                {_ini}
+              </div>
+              <div style="line-height:1.35;">
+                <div style="font-weight:600;color:#F1F5F9;font-size:0.95rem;">
+                  {html.escape(_fn)}
+                </div>
+                <div style="font-size:0.8rem;color:#94A3B8;">Role: {html.escape(_role)}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.sidebar.write(f"👤 {_fn}")
+        st.sidebar.write(f"Role: {_role}")
+    if st.sidebar.button("Logout"):
+        st.session_state.clear()
+        st.switch_page("pages/_Login.py")
 
     if page == "Dashboard":
         _inject_ishir_css()
@@ -1254,19 +1641,7 @@ def main():
     # RUN FULL PIPELINE, STOP in sidebar, background worker, result display.
     _inject_ishir_css()
     # ── Brand header: logo left | title + subtitle right ───────────────────
-    st.markdown(
-        """
-        <div style="padding:1.25rem 0 1rem 0; border-bottom:3px solid #FFD400; margin-bottom:1.5rem;">
-          <div style="font-size:1.6rem; font-weight:800; color:#111; line-height:1.2;">
-            Autonomous QA Platform
-          </div>
-          <div style="font-size:0.85rem; color:#555; margin-top:4px;">
-            Accelerating Software Quality with AI Agents
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    _render_ishir_page_header()
 
     if st.session_state["pipeline_running"]:
         _step        = st.session_state.get("pipeline_step", "full")

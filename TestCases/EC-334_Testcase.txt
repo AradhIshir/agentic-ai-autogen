@@ -1,0 +1,121 @@
+APP_URL: https://www.saucedemo.com/
+
+Positive Test Case
+
+Test Case ID: EC-334-TC-001
+Title: Add Product to Cart Successfully
+Test Type: Positive
+Preconditions: User is an authenticated shopper with valid credentials.
+
+Steps:
+
+Step 1:
+  Action: Navigate to the application URL.
+  Expected result: The login page loads; username field, password field, and Login button are visible.
+
+Step 2:
+  Action: Enter "standard_user" in the Username field.
+  Expected result: Username field shows standard_user.
+
+Step 3:
+  Action: Enter "secret_sauce" in the Password field.
+  Expected result: Password field holds the value (masked).
+
+Step 4:
+  Action: Click the Login button.
+  Expected result: User is redirected to the Products (Inventory) page; a list of products with their name, description, price, and Add to Cart button is visible.
+
+Step 5:
+  Action: Click the Add to Cart button for a product.
+  Expected result: The selected product is added to the cart; the Add to Cart button changes to Remove, and the Cart icon badge updates with the correct item count.
+
+Step 6:
+  Action: Click on the Cart icon.
+  Expected result: User is navigated to the Cart page showing the added product details (name, price, quantity).
+
+Expected Result: User successfully adds a product to the cart and verifies it in the Cart page with correct details.
+
+Negative Test Case
+
+Test Case ID: EC-334-TC-002
+Title: Unable to Add Product When Logged Out
+Test Type: Negative
+Preconditions: User is logged out of the application.
+
+Steps:
+
+Step 1:
+  Action: Navigate to the application URL.
+  Expected result: The login page loads; username field, password field, and Login button are visible.
+
+Step 2:
+  Action: Click the Add to Cart button for any product.
+  Expected result: User is not allowed to add a product; an error message prompts to log in.
+
+Expected Result: User cannot add a product to the cart without logging in.
+
+Boundary Test Case
+
+Test Case ID: EC-334-TC-003
+Title: Add Maximum Products to Cart
+Test Type: Boundary
+Preconditions: User is logged in with valid credentials and at least 5 products are available in stock.
+
+Steps:
+
+Step 1:
+  Action: Navigate to the application URL.
+  Expected result: The login page loads; username field, password field, and Login button are visible.
+
+Step 2:
+  Action: Enter "standard_user" in the Username field.
+  Expected result: Username field shows standard_user.
+
+Step 3:
+  Action: Enter "secret_sauce" in the Password field.
+  Expected result: Password field holds the value (masked).
+
+Step 4:
+  Action: Click the Login button.
+  Expected result: User is redirected to the Products (Inventory) page; a list of products is visible.
+
+Step 5:
+  Action: Click Add to Cart for all available products (5).
+  Expected result: All products are added to the cart; the Cart icon badge updates to reflect 5 items.
+
+Step 6:
+  Action: Click on the Cart icon.
+  Expected result: User is navigated to the Cart page showing 5 added product details.
+
+Expected Result: User can successfully add maximum available products (5) to the cart and verify all items in the Cart page.
+
+Edge Test Case
+
+Test Case ID: EC-334-TC-004
+Title: No Products in Cart
+Test Type: Edge
+Preconditions: User is logged in and has not added any products to the cart.
+
+Steps:
+
+Step 1:
+  Action: Navigate to the application URL.
+  Expected result: The login page loads; username field, password field, and Login button are visible.
+
+Step 2:
+  Action: Enter "standard_user" in the Username field.
+  Expected result: Username field shows standard_user.
+
+Step 3:
+  Action: Enter "secret_sauce" in the Password field.
+  Expected result: Password field holds the value (masked).
+
+Step 4:
+  Action: Click the Login button.
+  Expected result: User is redirected to the Products (Inventory) page; none of the products are added to the cart.
+
+Step 5:
+  Action: Click on the Cart icon.
+  Expected result: User is navigated to the Cart page displaying an empty state.
+
+Expected Result: Cart page displays an empty state when no products are added.
