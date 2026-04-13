@@ -1,5 +1,5 @@
 """
-ISHIR Autonomous QA Platform – Jira Webhook Listener
+ISHIR Agentic AI QA Workflow – Jira Webhook Listener
 =====================================================
 Receives Jira "issue_updated" webhooks and triggers the QA pipeline
 (TestDesigner → QALead review → AutomationAgent) whenever a User Story
@@ -43,16 +43,25 @@ log = logging.getLogger("jira_webhook")
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BACKEND_SCRIPT = os.path.join(PROJECT_ROOT, "backend", "UStoAutomationBug.py")
 
+
+def _ensure_workspace_dirs() -> None:
+    """Ensure TestCases, generated_testscript, and ResultReport exist; create each only if missing."""
+    for name in ("TestCases", "generated_testscript", "ResultReport"):
+        path = os.path.join(PROJECT_ROOT, name)
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+
 # Make project root importable for shared modules
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
-    from db_sync import db_sync_for_step, failed_playwright_title_matches_tc  # type: ignore
+    from db_sync import db_sync_for_step, failed_playwright_title_matches_tc, load_execution_json  # type: ignore
     _DB_SYNC_AVAILABLE = True
 except ImportError as _import_err:
     log.warning("db_sync not importable – DB sync disabled: %s", _import_err)
     _DB_SYNC_AVAILABLE = False
+    load_execution_json = None  # type: ignore
 
     def failed_playwright_title_matches_tc(tc_id: str, tc_title: str, playwright_failed_title: str) -> bool:
         """Fallback if db_sync missing: match only by TC id substring in failure title."""
@@ -130,9 +139,9 @@ async def _send_qalead_notification(
     recipients = [r.strip() for r in NOTIFY_TO.split(",") if r.strip()]
     to_list = [{"emailAddress": {"address": r}} for r in recipients]
 
-    subject = f"[ISHIR QA Platform] {ticket_id} – {subject_suffix}"
+    subject = f"[ISHIR Agentic AI QA Workflow] {ticket_id} – {subject_suffix}"
     lines_html = "".join(f"<p>{line}</p>" for line in (body_lines or []))
-    body = f"<p><b>QA Lead Notification</b></p>{lines_html}<p>— ISHIR Autonomous QA Platform</p>"
+    body = f"<p><b>QA Lead Notification</b></p>{lines_html}<p>— ISHIR Agentic AI QA Workflow</p>"
 
     payload = {
         "message": {
@@ -162,22 +171,22 @@ async def _send_qalead_notification(
 def _parse_tc_file(path: str) -> list[dict]:
     """Parse TestCases/<id>_Testcase.txt → list of {tc_id, title, test_type}.
 
-    Uses the same parser as DB sync (testcase_sync.parse_testcase_file) so emails
-    match Test Repository. Supports "- Test Case ID:" markdown and step lines.
+    Delegates to testcase_sync.parse_testcase_file whenever available so email tables
+    and DB sync always use the same logic (Test Case ID blocks, markdown ## headings,
+    section+bullet format). Legacy regex below is only used if that import fails.
     """
     if _parse_testcase_file_shared:
         try:
             parsed = _parse_testcase_file_shared(path)
-            if parsed:
-                return [
-                    {
-                        "tc_id": c.get("testcase_id", ""),
-                        "title": c.get("title", ""),
-                        "test_type": (c.get("description") or ""),
-                    }
-                    for c in parsed
-                    if c.get("testcase_id")
-                ]
+            return [
+                {
+                    "tc_id": c.get("testcase_id", ""),
+                    "title": c.get("title", ""),
+                    "test_type": (c.get("description") or ""),
+                }
+                for c in (parsed or [])
+                if c.get("testcase_id")
+            ]
         except Exception as exc:
             log.warning("Shared testcase parse failed for %s: %s", path, exc)
 
@@ -300,6 +309,7 @@ async def _send_plain_email(subject: str, body: str) -> None:
 
 async def _send_email1(ticket_id: str) -> None:
     """Email 1: Testcase & script Complete — sent after TestDesigner + AutomationAgent finish."""
+    _ensure_workspace_dirs()
     log.info("Composing Email 1 for %s …", ticket_id)
     fields      = await _fetch_jira_fields(ticket_id)
     summary     = fields.get("summary", ticket_id)
@@ -312,7 +322,7 @@ async def _send_email1(ticket_id: str) -> None:
             break
 
     tc_path     = os.path.join(PROJECT_ROOT, "TestCases", f"{ticket_id}_Testcase.txt")
-    script_path = os.path.join(PROJECT_ROOT, "generated_testscript", f"Script_{ticket_id}_.spec.ts")
+    script_path = os.path.join(PROJECT_ROOT, "generated_testscript", f"Script_{ticket_id}.spec.ts")
     tc_list     = _parse_tc_file(tc_path)
     scripts     = _parse_script_file(script_path)
 
@@ -346,7 +356,7 @@ Sprint     : {sprint_name}
 {script_bullets}
 
 ─────────────────────────────────
-ISHIR QA Automation Platform
+ISHIR Agentic AI QA Workflow
 Generated automatically by TestDesigner + AutomationAgent
 Do not reply to this email."""
 
@@ -356,6 +366,7 @@ Do not reply to this email."""
 
 async def _send_email2(ticket_id: str) -> None:
     """Email 2: QA Execution Complete — sent after ExecutionAgent + BugCreator finish."""
+    _ensure_workspace_dirs()
     log.info("Composing Email 2 for %s …", ticket_id)
     fields  = await _fetch_jira_fields(ticket_id)
     summary = fields.get("summary", ticket_id)
@@ -364,8 +375,11 @@ async def _send_email2(ticket_id: str) -> None:
     exec_path = os.path.join(PROJECT_ROOT, "ResultReport", f"execution_{ticket_id}.json")
     exec_data: dict = {}
     try:
-        with open(exec_path, "r", encoding="utf-8") as f:
-            exec_data = json.load(f)
+        if load_execution_json:
+            exec_data = load_execution_json(exec_path) or {}
+        else:
+            with open(exec_path, "r", encoding="utf-8") as f:
+                exec_data = json.load(f)
     except Exception:
         log.warning("Could not read %s", exec_path)
 
@@ -462,7 +476,7 @@ Pass Rate        : {pass_rate}%
   ---------|----------------------|------------------------------------------|----------|--------
 {bug_rows}
 ═══════════════════════════════════════
-ISHIR QA Automation Platform
+ISHIR Agentic AI QA Workflow
 Pipeline: ExecutionAgent → BugCreator → QA Lead
 This email was generated automatically. Do not reply.
 ═══════════════════════════════════════"""
@@ -480,6 +494,7 @@ This email was generated automatically. Do not reply.
 
 def _run_step(ticket_id: str, step: str) -> int:
     """Run one pipeline step synchronously; returns exit code."""
+    _ensure_workspace_dirs()
     env = os.environ.copy()
     env["JIRA_TICKET_ID"] = ticket_id
     env["PIPELINE_STEP"] = step
@@ -537,7 +552,7 @@ async def _trigger_dev_pipeline(ticket_id: str) -> None:
         subject_suffix="moved to In Progress – QA pipeline starting",
         body_lines=[
             f"Jira ticket <b>{ticket_id}</b> has moved to <b>In Progress</b>.",
-            "The ISHIR Autonomous QA Platform has automatically triggered:",
+            "The ISHIR Agentic AI QA Workflow has automatically triggered:",
             "<ul><li>TestDesigner → generating test cases</li>"
             "<li>AutomationAgent → writing Playwright scripts</li>"
             "<li>Execution will start automatically when the ticket moves to <b>QA</b>.</li></ul>",
@@ -584,7 +599,7 @@ async def _trigger_qa_pipeline(ticket_id: str) -> None:
         subject_suffix="moved to QA – starting test execution",
         body_lines=[
             f"Jira ticket <b>{ticket_id}</b> has moved to <b>QA</b>.",
-            "The ISHIR Autonomous QA Platform has automatically triggered:",
+            "The ISHIR Agentic AI QA Workflow has automatically triggered:",
             "<ul><li>ExecutionAgent → running Playwright tests</li>"
             "<li>BugCreator → analysing results and creating Jira bugs for failures</li>"
             "<li>QA Lead will receive a summary email once the pipeline completes.</li></ul>",
@@ -624,8 +639,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="ISHIR QA Webhook Listener",
-    description="Receives Jira webhooks and triggers the ISHIR Autonomous QA pipeline.",
+    title="ISHIR Agentic AI QA Workflow – Webhook Listener",
+    description="Receives Jira webhooks and triggers the ISHIR Agentic AI QA pipeline.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -634,7 +649,7 @@ app = FastAPI(
 @app.get("/health")
 async def health():
     """Health check – Jira can call this to verify the URL is live."""
-    return {"status": "ok", "service": "ISHIR QA Webhook Listener"}
+    return {"status": "ok", "service": "ISHIR Agentic AI QA Workflow – Webhook Listener"}
 
 
 @app.post("/jira-webhook", status_code=status.HTTP_202_ACCEPTED)

@@ -6,12 +6,9 @@ All outputs (test cases, scripts, execution results, bugs) are saved under Agent
 
 import streamlit as st
 
-if not st.session_state.get("logged_in"):
-    st.switch_page("pages/_Login.py")
-    st.stop()
-
 import html
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -21,6 +18,23 @@ import threading
 import time
 
 import streamlit.components.v1 as components
+
+_UI_DIR = os.path.dirname(os.path.abspath(__file__))
+# Project root = AgenticAIAutogen (all files saved here)
+PROJECT_ROOT = os.path.abspath(os.path.join(_UI_DIR, ".."))
+BACKEND_SCRIPT = os.path.join(PROJECT_ROOT, "backend", "UStoAutomationBug.py")
+
+for _p in (PROJECT_ROOT, _UI_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# Cookie restore runs only on `pages/_Login.py`. If we also prime here before
+# `switch_page`, Streamlit can execute both scripts in one run → two CookieManager.get_all()
+# calls with the same key "get_all" → StreamlitDuplicateElementKey.
+
+if not st.session_state.get("logged_in"):
+    st.switch_page("pages/_Login.py")
+    st.stop()
 
 try:
     import pandas as pd
@@ -33,17 +47,19 @@ except ImportError:
     get_connection = None  # type: ignore
 
 try:
-    from db_sync import db_sync_for_step
+    from db_sync import db_sync_for_step, load_execution_json
 except ImportError:
     def db_sync_for_step(ticket_id: str, step: str) -> None:  # type: ignore
         pass
 
-# Project root = AgenticAIAutogen (all files saved here)
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-BACKEND_SCRIPT = os.path.join(PROJECT_ROOT, "backend", "UStoAutomationBug.py")
+    def load_execution_json(path):  # type: ignore
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+_log = logging.getLogger(__name__)
 try:
     from jira_fetch import get_sprint_story_keys
 except ImportError:
@@ -68,6 +84,35 @@ STEP_LABELS: dict[str, str] = {
 # current subprocess reference — both are safe to access from any thread.
 _stop_event: threading.Event = threading.Event()
 _current_process: "subprocess.Popen | None" = None
+
+# Pipeline worker must NEVER touch st.session_state (background thread → ScriptRunContext warnings
+# and unreliable writes). Mirror progress here; main thread copies into session_state.
+_pipeline_worker_lock = threading.Lock()
+_pipeline_worker_ticket: str | None = None
+_pipeline_worker_result: dict | None = None
+
+
+def _sync_pipeline_worker_result_to_session() -> None:
+    """Read worker-published result on the main Streamlit thread only."""
+    global _pipeline_worker_result
+    with _pipeline_worker_lock:
+        res = _pipeline_worker_result
+        _pipeline_worker_result = None
+    if res is not None:
+        st.session_state["pipeline_done"] = True
+        st.session_state["pipeline_result"] = res
+        return
+    st.session_state["pipeline_done"] = True
+    st.session_state["pipeline_result"] = {
+        "batch_progress": [],
+        "last_stdout": "",
+        "last_stderr": "Pipeline thread ended without a result (killed or internal error).",
+        "last_returncode": -1,
+        "ticket_list": st.session_state.get("pipeline_ticket_list", []),
+        "batches": [],
+        "step": st.session_state.get("pipeline_step", "full"),
+        "project_key": "",
+    }
 
 
 def _kill_process(proc: subprocess.Popen) -> None:
@@ -645,6 +690,14 @@ FOLDERS = {
 }
 
 
+def _ensure_workspace_dirs() -> None:
+    """Ensure pipeline output folders exist; create each only if missing (does not touch existing dirs)."""
+    for name in ("TestCases", "generated_testscript", "ResultReport"):
+        path = os.path.join(PROJECT_ROOT, name)
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+
+
 def _get_backend_python() -> str:
     """Use project venv if present (has autogen_agentchat, etc.); else current interpreter."""
     if os.name == "nt":
@@ -658,6 +711,7 @@ def _get_backend_python() -> str:
 
 def run_pipeline(jira_ticket_id: str, step: str = "full") -> tuple[str, str, int]:
     """Run the backend agent pipeline (or single step). step: testcases|automation|execute|bugs|full."""
+    _ensure_workspace_dirs()
     env = os.environ.copy()
     env["JIRA_TICKET_ID"] = jira_ticket_id or "EC-298"
     env["PIPELINE_STEP"] = step
@@ -679,6 +733,7 @@ def run_pipeline(jira_ticket_id: str, step: str = "full") -> tuple[str, str, int
 
 def _start_pipeline_process(jira_ticket_id: str, step: str = "full") -> subprocess.Popen:
     """Start pipeline as a subprocess in its own process group so the whole tree can be killed."""
+    _ensure_workspace_dirs()
     env = os.environ.copy()
     env["JIRA_TICKET_ID"] = jira_ticket_id or "EC-298"
     env["PIPELINE_STEP"] = step
@@ -697,8 +752,9 @@ def _start_pipeline_process(jira_ticket_id: str, step: str = "full") -> subproce
 
 def _pipeline_worker(ticket_list: list[str], step: str, batches: list[list[str]], project_key: str) -> None:
     """Background thread: run pipeline for each ticket, use _stop_event (thread-safe) for stop signal."""
-    global _current_process
+    global _current_process, _pipeline_worker_ticket, _pipeline_worker_result
     stopped = False
+    result_dict: dict | None = None
     try:
         batch_progress: list[str] = []
         last_stdout, last_stderr, last_returncode = "", "", 0
@@ -712,18 +768,18 @@ def _pipeline_worker(ticket_list: list[str], step: str, batches: list[list[str]]
                 if _stop_event.is_set():
                     stopped = True
                     break
-                st.session_state["pipeline_current_ticket"] = ticket_id
+                with _pipeline_worker_lock:
+                    _pipeline_worker_ticket = ticket_id
                 try:
                     process = _start_pipeline_process(ticket_id, step=step)
-                    _current_process = process          # module-level: safe from any thread
-                    st.session_state["pipeline_process"] = process
+                    _current_process = process
                     while process.poll() is None:
-                        if _stop_event.is_set():       # thread-safe check — no ScriptRunContext needed
+                        if _stop_event.is_set():
                             stopped = True
                             _kill_process(process)
                             last_stdout, last_stderr, last_returncode = "Pipeline stopped by user.", "", -1
                             break
-                        time.sleep(0.3)                # tighter poll so stop feels instant
+                        time.sleep(0.3)
                     else:
                         last_stdout = (process.stdout and process.stdout.read()) or ""
                         last_stderr = (process.stderr and process.stderr.read()) or ""
@@ -733,20 +789,18 @@ def _pipeline_worker(ticket_list: list[str], step: str, batches: list[list[str]]
                 except Exception as e:
                     last_stdout, last_stderr, last_returncode = "", str(e), -1
                 _current_process = None
-                st.session_state["pipeline_process"] = None
                 if not stopped and last_returncode == 0:
                     try:
                         db_sync_for_step(ticket_id, step)
                     except Exception:
-                        pass
+                        _log.exception("db_sync_for_step failed for %s step=%s", ticket_id, step)
                 if stopped:
                     break
             if len(batches) > 1 and not stopped:
                 batch_progress.append(f"Batch {batch_idx + 1} completed.")
             if stopped:
                 break
-        st.session_state["pipeline_done"] = True
-        st.session_state["pipeline_result"] = {
+        result_dict = {
             "batch_progress": batch_progress,
             "last_stdout": last_stdout,
             "last_stderr": last_stderr,
@@ -757,8 +811,7 @@ def _pipeline_worker(ticket_list: list[str], step: str, batches: list[list[str]]
             "project_key": project_key,
         }
     except Exception as e:
-        st.session_state["pipeline_done"] = True
-        st.session_state["pipeline_result"] = {
+        result_dict = {
             "batch_progress": [],
             "last_stdout": "",
             "last_stderr": str(e),
@@ -770,9 +823,10 @@ def _pipeline_worker(ticket_list: list[str], step: str, batches: list[list[str]]
         }
     finally:
         _current_process = None
-        st.session_state["pipeline_running"] = False
-        st.session_state["pipeline_process"] = None
-        st.session_state["pipeline_current_ticket"] = None
+        with _pipeline_worker_lock:
+            _pipeline_worker_ticket = None
+            if result_dict is not None:
+                _pipeline_worker_result = result_dict
 
 
 def get_final_result_content(jira_id: str) -> str:
@@ -792,8 +846,9 @@ def get_execution_summary(jira_id: str) -> str:
     path = os.path.join(FOLDERS["results"], f"execution_{jira_id}.json")
     if os.path.isfile(path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_execution_json(path)
+            if not data:
+                return ""
             t = data.get("total_tests", 0)
             p = data.get("passed_tests", 0)
             f = data.get("failed_tests", 0)
@@ -811,7 +866,7 @@ def list_saved_files(jira_id: str) -> list[tuple[str, str]]:
     if os.path.isfile(tc):
         out.append(("Test cases", tc))
     # Script
-    script = os.path.join(FOLDERS["scripts"], f"Script_{jira_id}_.spec.ts")
+    script = os.path.join(FOLDERS["scripts"], f"Script_{jira_id}.spec.ts")
     if os.path.isfile(script):
         out.append(("Automation script", script))
     # Result report files
@@ -840,7 +895,7 @@ def _test_cases_exist(jira_id: str) -> bool:
 
 def _automation_script_exists(jira_id: str) -> bool:
     """Check file system first, then DB — scripts must exist before execution."""
-    if os.path.isfile(os.path.join(FOLDERS["scripts"], f"Script_{jira_id}_.spec.ts")):
+    if os.path.isfile(os.path.join(FOLDERS["scripts"], f"Script_{jira_id}.spec.ts")):
         return True
     if get_connection is not None:
         try:
@@ -1381,16 +1436,49 @@ def _render_test_repository():
                             st.caption("No automation script linked.")
                     with tab_exec:
                         execs = _repo_executions(tc["testcase_id"])
+                        jid = (tc.get("jira_id") or "").strip()
+                        result_txt_path = (
+                            os.path.join(PROJECT_ROOT, "ResultReport", f"result_{jid}.txt") if jid else ""
+                        )
                         if execs:
                             for ei, e in enumerate(execs):
                                 st.markdown(f"**{e['execution_status']}** — {e['execution_date']}")
                                 if e.get("report_path"):
-                                    st.text(f"Report: {e['report_path']}")
+                                    st.caption(f"Artifacts (DB): {e['report_path']}")
                                 if e.get("execution_logs"):
-                                    st.text_area("Logs", value=e["execution_logs"], height=120, disabled=True, label_visibility="collapsed",
-                                                 key=f"logs_{tc['testcase_id']}_{ei}")
+                                    st.text_area(
+                                        "Error / detail (from execution)",
+                                        value=e["execution_logs"],
+                                        height=120,
+                                        disabled=True,
+                                        label_visibility="collapsed",
+                                        key=f"logs_{tc['testcase_id']}_{ei}",
+                                    )
                         else:
-                            st.caption("No execution results.")
+                            st.caption("No execution results in the database yet.")
+                        if jid and result_txt_path and os.path.isfile(result_txt_path):
+                            with st.expander(f"📄 Result summary — result_{jid}.txt (readable)", expanded=False):
+                                try:
+                                    with open(result_txt_path, "r", encoding="utf-8", errors="replace") as rf:
+                                        txt = rf.read()
+                                    # text_area + fixed key caches value in session_state; an early empty read
+                                    # sticks forever. Key must change when the file changes.
+                                    sti = os.stat(result_txt_path)
+                                    _result_key = (
+                                        f"result_txt_view_{tc['testcase_id']}_{int(sti.st_mtime)}_{sti.st_size}"
+                                    )
+                                    st.text_area(
+                                        "Contents",
+                                        value=txt,
+                                        height=320,
+                                        disabled=True,
+                                        label_visibility="collapsed",
+                                        key=_result_key,
+                                    )
+                                except OSError:
+                                    st.caption("Could not read the result file.")
+                        elif jid and not execs:
+                            st.caption("If execution finished, run sync (pipeline success) or open ResultReport on disk.")
                     with tab_bugs:
                         bug_list = _repo_bugs(tc["testcase_id"])
                         if bug_list:
@@ -1409,7 +1497,7 @@ def _render_ishir_page_header() -> None:
             <div style="padding:0.35rem 0 1rem 0; margin-bottom:1rem;
                         border-bottom:2px solid #FFD400;">
               <span style="font-size:1.05rem; font-weight:800; color:#111;">
-                ISHIR Autonomous QA Platform
+                ISHIR Agentic AI QA Workflow
               </span>
               <span style="font-size:0.88rem; color:#64748B; font-weight:500;">
                 &nbsp;·&nbsp;Accelerating Software Quality with AI Agents
@@ -1423,7 +1511,7 @@ def _render_ishir_page_header() -> None:
         """
         <div style="padding:1.25rem 0 1rem 0; border-bottom:3px solid #FFD400; margin-bottom:1.5rem;">
           <div style="font-size:1.6rem; font-weight:800; color:#111; line-height:1.2;">
-            ISHIR Autonomous QA Platform
+            ISHIR Agentic AI QA Workflow
           </div>
           <div style="font-size:0.85rem; color:#555; margin-top:4px;">
             Accelerating Software Quality with AI Agents
@@ -1445,7 +1533,7 @@ def _render_ishir_footer() -> None:
             <strong style="color:#111;">iSHIR</strong>
             &nbsp;AI Innovation Lab &nbsp;|&nbsp;
             <span style="color:#FFD400;">&#9632;</span>
-            &nbsp;Autonomous QA Platform
+            &nbsp;ISHIR Agentic AI QA Workflow
           </span>
         </div>
         """,
@@ -1454,10 +1542,12 @@ def _render_ishir_footer() -> None:
 
 
 def main():
+    global _pipeline_worker_ticket, _pipeline_worker_result
+
     # show_sidebar_navigation: Streamlit ≥1.36 — hides auto "app" / pages links (see .streamlit/config.toml too)
     try:
         st.set_page_config(
-            page_title="ISHIR Autonomous QA Platform",
+            page_title="ISHIR Agentic AI QA Workflow",
             page_icon="🤖",
             layout="wide",
             initial_sidebar_state="expanded",
@@ -1465,7 +1555,7 @@ def main():
         )
     except TypeError:
         st.set_page_config(
-            page_title="ISHIR Autonomous QA Platform",
+            page_title="ISHIR Agentic AI QA Workflow",
             page_icon="🤖",
             layout="wide",
             initial_sidebar_state="expanded",
@@ -1555,6 +1645,12 @@ def main():
         st.sidebar.write(f"👤 {_fn}")
         st.sidebar.write(f"Role: {_role}")
     if st.sidebar.button("Logout"):
+        try:
+            from session_cookie import clear_login_cookie
+
+            clear_login_cookie()
+        except ImportError:
+            pass
         st.session_state.clear()
         st.switch_page("pages/_Login.py")
 
@@ -1590,6 +1686,13 @@ def main():
         st.session_state["pipeline_step"] = "full"
     if "pipeline_ticket_list" not in st.session_state:
         st.session_state["pipeline_ticket_list"] = []
+
+    if st.session_state["pipeline_running"]:
+        with _pipeline_worker_lock:
+            ct = _pipeline_worker_ticket
+        if ct:
+            st.session_state["pipeline_current_ticket"] = ct
+        st.session_state["pipeline_process"] = _current_process
 
     # ----- STOP button when pipeline is running -----
     if st.session_state["pipeline_running"]:
@@ -1668,7 +1771,11 @@ def main():
         # as soon as the thread exits — this clears the "running" banner automatically.
         _bg_thread = st.session_state.get("pipeline_thread")
         if _bg_thread is not None and not _bg_thread.is_alive():
+            _sync_pipeline_worker_result_to_session()
             st.session_state["pipeline_running"] = False
+            st.session_state["pipeline_process"] = None
+            st.session_state["pipeline_current_ticket"] = None
+            st.session_state["pipeline_thread"] = None
             st.rerun()
         else:
             time.sleep(2)
@@ -1764,7 +1871,7 @@ def main():
             )
             st.stop()
         if btn_execute:
-            script_path = os.path.join(FOLDERS["scripts"], f"Script_{tid}_.spec.ts")
+            script_path = os.path.join(FOLDERS["scripts"], f"Script_{tid}.spec.ts")
             if not os.path.isfile(script_path):
                 st.error(
                     f"⛔ **File not found:** `{os.path.relpath(script_path, PROJECT_ROOT)}`\n\n"
@@ -1800,6 +1907,9 @@ def main():
         st.session_state["pipeline_step"] = step
         st.session_state["pipeline_ticket_list"] = ticket_list
         _stop_event.clear()   # reset stop signal for fresh run
+        with _pipeline_worker_lock:
+            _pipeline_worker_ticket = None
+            _pipeline_worker_result = None
         batches = [ticket_list[i : i + BATCH_SIZE] for i in range(0, len(ticket_list), BATCH_SIZE)]
         thread = threading.Thread(
             target=_pipeline_worker,
@@ -1859,7 +1969,7 @@ def main():
                 st.caption("No test case file found for this ticket.")
 
         # Automation Scripts
-        script_path = os.path.join(FOLDERS["scripts"], f"Script_{ticket_to_show}_.spec.ts")
+        script_path = os.path.join(FOLDERS["scripts"], f"Script_{ticket_to_show}.spec.ts")
         with st.expander("Automation Scripts"):
             if os.path.isfile(script_path):
                 try:
@@ -1871,9 +1981,21 @@ def main():
                 st.caption("No automation script found for this ticket.")
 
         # Execution Report
+        result_path_pipe = os.path.join(FOLDERS["results"], f"result_{ticket_to_show}.txt")
         with st.expander("Execution Report"):
             if result_txt:
-                st.text_area("Execution result", value=result_txt, height=200, disabled=True, label_visibility="collapsed")
+                rp_key = "exec_report_txt"
+                if os.path.isfile(result_path_pipe):
+                    st_rp = os.stat(result_path_pipe)
+                    rp_key = f"exec_report_{ticket_to_show}_{int(st_rp.st_mtime)}_{st_rp.st_size}"
+                st.text_area(
+                    "Execution result",
+                    value=result_txt,
+                    height=200,
+                    disabled=True,
+                    label_visibility="collapsed",
+                    key=rp_key,
+                )
             if summary:
                 st.caption(summary)
             if not result_txt and not summary:

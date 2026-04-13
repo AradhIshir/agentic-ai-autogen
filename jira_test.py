@@ -14,7 +14,23 @@ from autogen_ext.tools.mcp import StdioServerParams, McpWorkbench
 
 load_dotenv()
 
+_REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+
+
+def _ensure_workspace_dirs() -> None:
+    """Create each pipeline folder only if it does not already exist."""
+    for name in ("TestCases", "generated_testscript", "ResultReport"):
+        path = os.path.join(_REPO_ROOT, name)
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+
+
 async def main():
+    jira_id = os.environ.get("JIRA_TICKET_ID", "EC-298")
+    cloud_id = (os.environ.get("JIRA_CLOUD_ID") or "").strip()
+    if not cloud_id:
+        raise ValueError("Set JIRA_CLOUD_ID in .env (Atlassian cloud UUID for MCP Jira tools).")
+    _ensure_workspace_dirs()
     model_client = OpenAIChatCompletionClient(
         model="gpt-4o-mini",
         api_key=os.environ["OPENAI_API_KEY"]
@@ -65,7 +81,6 @@ async def main():
             browser_click
             browser_type
             browser_wait_for
-            browser_screenshot
             Execute the user flow step-by-step and validate expected outcomes.
             
             EXECUTION WORKFLOW
@@ -119,8 +134,6 @@ async def main():
                 
                 When a failure occurs:
                 
-                Immediately capture screenshot using browser_screenshot.
-                
                 Record the error message and failed step.
                 
                 Mark the test case as FAILED.
@@ -151,7 +164,6 @@ async def main():
             The JSON execution report must be written ONLY after:
             1. All test cases have been executed
             2. All pass/fail results have been collected
-            3. All screenshots for failures are captured
                         
             FILE 2 — TEXT EXECUTION SUMMARY
             File name format: result_<JIRA_TICKET_ID>.txt
@@ -163,11 +175,6 @@ async def main():
             Failed Tests
             Failed Test Titles
             Error Messages
-            
-            FILE 3 — FAILURE SCREENSHOT
-            If a test fails capture screenshot using browser_screenshot
-            File name format: screenshot_<JIRA_TICKET_ID>.png
-            Example: ResultReport/screenshot_EC-298.png
             
             CRITICAL RULES
             • Always execute test flow using MCP browser tools
@@ -188,43 +195,47 @@ async def main():
             name="BugCreator",
             model_client=model_client,
             workbench=[jira_wb, fs_wb],
-            system_message="""
+            system_message=f"""
             ## You are a QA Bug Creation Agent. Your responsibility is to analyze Playwright execution reports and 
             create bug records for every failed test case. You do NOT execute tests. 
             You do NOT modify automation scripts. You ONLY read execution reports and create bugs.
             
+            **SCOPE — THIS PIPELINE RUN ONLY (MANDATORY)**
+            The User Story ticket for THIS run is: **{jira_id}**
+            • You MUST ONLY read: ResultReport/execution_{jira_id}.json
+            • You MUST NOT read, analyze, or create bugs from any other execution_*.json.
+            • You MUST ONLY write local bug files matching: ResultReport/bug_{jira_id}_*.txt
+            
             **PAY ATTENTION: VERY CRITICAL**
-            Before performing any action, 
-                Search folder ResultReport for files matching:
-                execution_*.json
-                If no such file exists:
+            Before any other action, confirm ResultReport/execution_{jira_id}.json exists.
+                If that **exact** file does NOT exist:
                 respond exactly with:
                 REMAIN SILENT and WAIT for instructions
               
 
             INPUT SOURCE
-            Execution reports are located in folder: ResultReport
-            Files follow the format: execution_<JIRA_TICKET_ID>.json
-            Example: ResultReport/execution_EC-298.json
-            Each JSON file corresponds to execution of one Playwright automation script. 
-            This JSON file is the ONLY source of truth for execution results.
+            The ONLY execution report for this run is:
+            ResultReport/execution_{jira_id}.json
+            That JSON is the ONLY source of truth for pass/fail on this ticket.
             ----------------------------------------------------------------------------------------------------------------------------------------------
             
             PROCESS
             
-            1. Locate all files matching pattern execution_<JIRA_TICKET_ID>.json inside ResultReport.
-            2. Read each JSON execution report.
-            3. Identify all failed test cases.
+            1. Read ONLY ResultReport/execution_{jira_id}.json (no other execution JSON).
+            2. Identify all failed test cases in that file.
             
             4.TESTCASE STEP EXTRACTION RULE
-               When a failed test case is detected from execution_<JIRA_ID>.json, 
-               use the failed test title to locate the original manual test case definition stored in the TestCases folder
+               When a failed test case is detected from execution_{jira_id}.json,
+               use the failed test title to find the matching section inside the **single** manual test file for that ticket.
                Steps to follow:
-            1. Read execution_<JIRA_ID>.json from the ResultReport folder.
-            2. Identify the failed test title from failed_test_details. 
+            1. Use ResultReport/execution_{jira_id}.json (already read above).
+            2. Identify the failed test title from failed_test_details.
                 Example: "Positive Test Case: Successful Login".
-            3. Open files inside the TestCases folder using the filesystem MCP tool that matches the <JIRA_ID> .
-            4. Search for the matching test case section where the title corresponds to the failed test case.
+            3. Read **exactly one** manual test file: TestCases/{jira_id}_Testcase.txt
+               (same ticket as this run — do not open TestCases for any other id).
+               Do NOT read TestCases/<JIRA>_TC-NNN.txt or any per-test-case filenames — those files do not exist.
+               Use filesystem MCP read_file only on that path.
+            4. Inside that file, search for the section whose title corresponds to the failed test title.
             Example structure inside the test case file:
             Positive Test Cases:
             5. Test Case: Successful Login
@@ -242,20 +253,32 @@ async def main():
             Execution failed during automated Playwright execution.
             Error Message:<error_message from execution JSON>,
             Automation Evidence:Failure detected during automated Playwright execution.
-            Screenshot:ResultReport/screenshot_<JIRA_ID>.png
-            IMPORTANT RULES:Steps must come from the TestCases folder.
-            Do not invent steps.If the matching test case cannot be found, fall back to generic reproduction steps.
+            IMPORTANT RULES: Steps must come from TestCases/{jira_id}_Testcase.txt only.
+            Do not invent steps. If the matching section cannot be found in that file, fall back to generic reproduction steps.
 
             BUG CREATION RULE
-            Create one bug for each failed test case.
-             Use the filesystem MCP `write_file` tool to write or overwrite the file IF it already exists."
+            For each failed test in execution_{jira_id}.json you MUST create a real Bug in Jira, then write the local mirror file.
+            
+            ORDER (MANDATORY — NEVER REVERSE OR BATCH-SKIP JIRA):
+            For **each** failed test case:
+              (1) Call the Jira MCP tool to **create** the Bug (e.g. jira_create_issue) and wait until the tool returns the **new issue key**
+                  (a different key from the User Story — e.g. EC-412, not **{jira_id}**).
+              (2) ONLY AFTER (1) succeeds, use filesystem `write_file` for exactly one file:
+                  ResultReport/bug_{jira_id}_<short sanitized failed-test title>.txt
+                  The **first line** MUST be: JIRA_BUG_ID: <the key returned in (1)>
+            
+            FORBIDDEN:
+            • write_file for bug_{jira_id}_*.txt **before** jira_create_issue (or equivalent) returns the new Bug key for that failure.
+            • Using **{jira_id}** (this User Story key) as JIRA_BUG_ID — only the **newly created Bug** key is allowed.
+            • Creating bug files for any ticket other than **{jira_id}** in this run.
+            
             Bug fields must be generated as follows:
             Issue Type: Bug
             Summary: <JIRA_TICKET_ID>_<FAILED_TEST_TITLE>
             Description must contain:
             Script Name: <script name>
             Test Case: <failed test title>
-            Environment: Playwright Automation Execution
+            Environment: QA
             Execution Time: <timestamp if available>
             Error Message: <error message>
             Expected Result: Application should behave as defined in the test case.
@@ -266,7 +289,6 @@ async def main():
             2. Perform the scenario described in the failed test case.
             3. Observe the failure described in the error message.
                Automation Evidence: Failure detected during automated Playwright execution.
-               Screenshot: ResultReport/screenshot_<JIRA_TICKET_ID>.png (if available)
             
             ---
             
@@ -274,8 +296,8 @@ async def main():
             Use the Jira MCP tool to create the bug in Jira Cloud.
             Use the provided cloudId when calling the Jira tool.
             Example Jira MCP tool call:
-            jira_create_issue({
-            cloudId: "67d1724f-9c51-4717-bc9a-687b0f5aacd7",
+            jira_create_issue({{
+            cloudId: "{cloud_id}",
             projectKey: "EC",
             issueType: "Bug",
             summary: "<JIRA_TICKET_ID>_<FAILED_TEST_TITLE>",
@@ -286,7 +308,7 @@ async def main():
             <FAILED_TEST_TITLE>
             
             Environment:
-            Playwright Automation Execution
+            QA
             
             Error Message: <error message>
             
@@ -298,34 +320,32 @@ async def main():
             
             Automation Evidence:
             Failure detected during Playwright automated execution
-            
-            Screenshot:
-            ResultReport/screenshot_<JIRA_TICKET_ID>.png
             `
-            })
+            }})
             --
             
             LOCAL FILE CREATION (FOR TESTING PURPOSE)
-            For testing purposes also create a local file using filesystem MCP tool write_file.
+            After each successful Jira Bug create for this ticket, write one local file via filesystem MCP write_file.
             File location: ResultReport
             File name format:
-            bug_<JIRA_TICKET_ID>_<FAILED_TEST_TITLE>.txt
+            bug_{jira_id}_<FAILED_TEST_TITLE>.txt
             Example:
             ResultReport/bug_EC-298_Login button validation failure.txt
-            File content must include the bug summary and full bug description.
+            The first line MUST be JIRA_BUG_ID: <new Bug key from Jira>, never **{jira_id}**.
+            The remainder must include the bug summary and full bug description.
             -------------------------------------------------------------------
             
             CRITICAL RULES
-            • Always rely only on JSON execution reports
+            • Always rely ONLY on ResultReport/execution_{jira_id}.json for this run
             • Do NOT assume failures
-            • Do NOT create bugs if no failed tests exist
-            • Create one bug per failed test case
+            • Do NOT create Jira issues or local bug files if there are no failed tests in that JSON
+            • Create one Jira Bug + one local bug_ file per failed test (Jira first, then write_file)
             • Do NOT modify execution reports
             • Do NOT modify automation scripts
             ----------------------------------
             
             FINAL RESPONSE
-            When processing of all execution reports is finished respond EXACTLY with:
+            When processing execution_{jira_id}.json (and Jira + local files for this ticket only) is finished respond EXACTLY with:
             BugCreator Completed
             Do NOT include any additional text.
 

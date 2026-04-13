@@ -11,6 +11,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
+
+
+def _ensure_workspace_dirs() -> None:
+    """Create each pipeline folder only if it does not already exist."""
+    for name in ("TestCases", "generated_testscript", "ResultReport"):
+        path = os.path.join(_REPO_ROOT, name)
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 JIRA_URL = os.getenv("JIRA_URL")
 JIRA_USERNAME = os.getenv("JIRA_USERNAME")
@@ -19,6 +30,7 @@ JIRA_PROJECTS_FILTER = os.getenv("JIRA_PROJECTS_FILTER")
 
 
 async def main():
+    _ensure_workspace_dirs()
     model_client = OpenAIChatCompletionClient(model="gpt-4o", api_key=os.environ["OPENAI_API_KEY"])
 
     atlassian_server = StdioServerParams(
@@ -105,8 +117,7 @@ async def main():
                 ***wait for seeing SCRIPT Completed ***
          Use Playwright MCP tools to "
         "execute the smoke test. Execute the automated test step by step and report "
-        "results clearly, including any errors or successes. Take screenshots at key "
-        "points to document the test execution."
+        "results clearly, including any errors or successes."
 
         "Make sure expected results in the bug are validated in your flow"
         "Important : Use browser_wait_for to wait for success/error messages\n"
@@ -117,12 +128,7 @@ async def main():
                 "- IMPORTANT RULE: If a file with the same name already exists, you MUST OVERWRITE it."
                 "- Do NOT create numbered files ."
                 "- Use the filesystem MCP `write_file` tool to write or overwrite the file IF it already exists."
-        "FAILURE SCREENSHOT RULE (MANDATORY):
-            1. When expect_locator() fails OR validation fails → 
-               browser_screenshot(page, 'Issue_screenshot_failure.png')
-            2. Log: 'BUG_FOUND - Screenshot saved: Issue_screenshot_failure.png'
-            3. Continue to next step
-            4. ALWAYS end with: 'TESTING COMPLETE'"
+        "On failure, record the error and continue; ALWAYS end with: 'TESTING COMPLETE'"
 
         "Complete ALL steps before saying 'TESTING COMPLETE, Execute each step fully, don't rush to completion"""
 
@@ -151,7 +157,7 @@ async def main():
                     
                     automation_script
                     Read the testcases , convert them in playwright scripts and save.
-                    Then, execute them, save the results and screenshot if any bug found.
+                    Then, execute them and save the results.
                     If bug found, create a new bug in jira in backlog.
                     """
 
