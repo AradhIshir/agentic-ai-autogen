@@ -11,7 +11,7 @@
 | Path | Role |
 |------|------|
 | **`TestCases/`** | Manual test specs: `{JIRA_ID}_Testcase.txt` — written by TestDesigner (MCP), read by AutomationAgent, Execution/Bug flows, sync, UI, webhook. |
-| **`generated_testscript/`** | Playwright specs: `Script_{JIRA_ID}_.spec.ts` — written by AutomationAgent, read by ExecutionAgent & UI. |
+| **`generated_testscript/`** | Playwright specs: `Script_{JIRA_ID}.spec.ts` — written by AutomationAgent, read by ExecutionAgent & UI. |
 | **`ResultReport/`** | `execution_{JIRA_ID}.json`, `result_{JIRA_ID}.txt`, `screenshot_*.png`, `bug_*` text files — written by agents; read by `db_sync`, webhook, UI (pipeline results). |
 | **`db/qa_testing.db`** | SQLite (not “artifacts” but on-disk DB file). |
 | **`dashboard_config.json`** | Optional project display names for UI (not DB). |

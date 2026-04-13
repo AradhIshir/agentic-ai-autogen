@@ -1,0 +1,11 @@
+Total Tests: 4
+Passed Tests: 1
+Failed Tests: 3
+
+Failed Test Cases:
+1. Positive: EC-334-TC-001 — Add a product to the cart successfully
+   - Error: Timeout 30000ms exceeded
+2. Negative: EC-334-TC-002 — Attempt to view Cart without adding products
+   - Error: Timeout 30000ms exceeded
+3. Boundary: EC-334-TC-003 — Add maximum products to the cart
+   - Error: Timeout 30000ms exceeded

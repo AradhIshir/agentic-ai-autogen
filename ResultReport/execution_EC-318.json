@@ -1,1 +1,1 @@
-{"jira_ticket_id":"EC-318","total_tests":4,"passed_tests":3,"failed_tests":1,"failed_test_details":[{"title":"Negative: EC-318-TC-002 — Cart Cleanup and Continue Shopping - Negative Flow (Invalid Credentials)","error_message":"Epic sadface: Username and password do not match any user in this service"}]}
+{"jira_ticket_id":"EC-318","total_tests":4,"passed_tests":4,"failed_tests":0,"failed_test_details":[]}

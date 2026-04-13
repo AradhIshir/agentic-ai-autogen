@@ -1,0 +1,48 @@
+APP_URL: https://www.saucedemo.com/
+
+---
+
+Positive Test Cases
+
+---
+
+**Test Case ID:** EC-345-TC-001  
+**Title:** View Product Details  
+**Test Type:** Positive  
+**Preconditions:** User is already registered on the app  
+
+**Steps:**
+
+1:
+Action: Navigate to the application URL.  
+Expected result: Login page loads; username field, password field, and Login button are visible.
+
+2:
+Action: Enter "standard_user" in the Username field.  
+Expected result: Username field shows standard_user.
+
+3:
+Action: Enter "secret_sauce" in the Password field.  
+Expected result: Password field holds the value (masked).
+
+4:
+Action: Click the Login button.  
+Expected result: User is redirected to the inventory page.
+
+5:
+Action: Click on a product image on the inventory page.  
+Expected result: User navigates to the product detail page.
+
+6:
+Action: Verify product name, description, price, and Add to Cart button are visible.  
+Expected result: Detail page displays correct product information.
+
+7:
+Action: If product is already in cart, check if Remove button is visible.  
+Expected result: Remove button shows instead of Add to Cart button.
+
+8:
+Action: Click the Back to products button.  
+Expected result: User is redirected back to the inventory page.
+
+**Expected Result:** User successfully views product details.

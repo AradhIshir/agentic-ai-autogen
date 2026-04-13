@@ -1,0 +1,20 @@
+JIRA_BUG_ID: EC-389
+
+Summary: EC-334_Boundary: EC-334-TC-003 — Add maximum products to the cart
+Description:
+Script Name: Script_EC-334.spec.ts
+
+Test Case: Boundary: EC-334-TC-003 — Add maximum products to the cart
+
+Environment: QA
+
+Error Message: Timeout 30000ms exceeded
+
+Steps to Reproduce:
+
+1. Navigate to the relevant application page.
+2. Perform the scenario described in the test case.
+3. Observe the failure described in the error message.
+
+Automation Evidence:
+Failure detected during Playwright automated execution.

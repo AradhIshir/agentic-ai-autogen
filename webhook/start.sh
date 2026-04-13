@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the ISHIR QA Webhook Listener
+# Start the ISHIR Agentic AI QA Workflow webhook listener
 # Usage: bash webhook/start.sh [PORT]
 set -e
 
@@ -15,7 +15,7 @@ fi
 pip install -q -r "$ROOT/webhook/requirements.txt"
 
 echo "============================================="
-echo " ISHIR QA Webhook Server"
+echo " ISHIR Agentic AI QA Workflow – Webhook Server"
 echo " Listening on port $PORT"
 echo "============================================="
 echo " Public URL (ngrok – run in another terminal):"

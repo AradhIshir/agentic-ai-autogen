@@ -1,9 +1,10 @@
 """
-Login page for ISHIR Autonomous QA Platform.
+Login page for ISHIR Agentic AI QA Workflow.
 Database: db/qa_testing.db, table users (admin adds users; no signup).
 """
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 
 import bcrypt
@@ -14,17 +15,29 @@ _UI_DIR = os.path.abspath(os.path.join(_PAGES_DIR, ".."))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_UI_DIR, ".."))
 DB_PATH = os.path.join(_PROJECT_ROOT, "db", "qa_testing.db")
 
+for _p in (_PROJECT_ROOT, _UI_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 _LOGO_CANDIDATES = (
     os.path.join(_UI_DIR, "ishir_logo.png"),
     os.path.join(_UI_DIR, "assets", "ishir_logo.png"),
 )
 
 st.set_page_config(
-    page_title="Login — ISHIR Autonomous QA Platform",
+    page_title="Login — ISHIR Agentic AI QA Workflow",
     page_icon="🤖",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
+
+try:
+    from session_cookie import prime_cookies_and_maybe_restore, save_login_cookie
+
+    prime_cookies_and_maybe_restore()
+except ImportError:
+    def save_login_cookie(_email: str) -> None:  # type: ignore
+        return
 
 if st.session_state.get("logged_in"):
     st.switch_page("app.py")
@@ -117,7 +130,7 @@ with col_center:
 
     st.markdown(
         '<p class="login-subtitle" style="text-align:center;">'
-        'Autonomous QA Platform</p>',
+        'ISHIR Agentic AI QA Workflow</p>',
         unsafe_allow_html=True,
     )
 
@@ -203,5 +216,9 @@ with col_center:
             st.session_state["user_email"] = row["email"]
             st.session_state["user_role"] = (row["role"] or "").strip().lower()
             st.session_state["full_name"] = row["full_name"] or ""
+            try:
+                save_login_cookie(row["email"])
+            except Exception:
+                pass
             st.switch_page("app.py")
             st.stop()

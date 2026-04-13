@@ -1,6 +1,10 @@
 """
 Sync generated test case files (TestCases/<JIRA_ID>_Testcase.txt) into db/qa_testing.db
 so they appear in the Test Repository. Call after TestDesigner generates test cases.
+
+Single source of truth for parsing: parse_testcase_file(). Used by sync_testcases_to_db(),
+webhook email helpers (when testcase_sync is importable), and backfill-style tooling.
+Add new TestDesigner layouts here only — do not duplicate split logic elsewhere.
 """
 import os
 import re
@@ -30,9 +34,10 @@ def _jira_id_to_project_key(jira_id: str) -> str:
 def parse_testcase_file(file_path: str) -> list[dict]:
     """
     Parse TestCases/<jira_id>_Testcase.txt into a list of test case dicts.
-    Supports two formats:
+    Supports formats:
     1. Structured: blocks starting with "Test Case ID: ..."
-    2. Section+bullet: "Positive Test Cases:\n1. ...\n2. ..."
+    2. Markdown headings: "# Positive Test Cases" + "## EC-334-TC-001" + Title/Steps blocks
+    3. Section+bullet: "Positive Test Cases:\n1. ...\n2. ..."
     """
     path = Path(file_path)
     if not path.is_file():
@@ -63,9 +68,77 @@ def parse_testcase_file(file_path: str) -> list[dict]:
     if cases:
         return cases
 
-    # ── Format 2: section headers + numbered bullets ─────────────────────────
+    # ── Format 2: Markdown "# Section" + "## <ID>-TC-NNN" blocks ────────────
+    md_cases = _parse_markdown_heading_format(text, path)
+    if md_cases:
+        return md_cases
+
+    # ── Format 3: section headers + numbered bullets ─────────────────────────
     # e.g.  "Positive Test Cases:\n1. Verify login...\n2. Confirm..."
     return _parse_section_bullet_format(text, path)
+
+
+def _parse_markdown_heading_format(text: str, path: Path) -> list[dict]:
+    """
+    Parse TestDesigner markdown style:
+      # Positive Test Cases
+      ## EC-334-TC-001
+      Title: ...
+      Steps:
+      1: ...
+    """
+    section_map = {
+        r"positive\s+test\s+cases": ("Positive", "High"),
+        r"negative\s+test\s+cases": ("Negative", "Medium"),
+        r"boundary\s+test\s+cases": ("Boundary", "Medium"),
+        r"edge\s+test\s+cases": ("Edge", "Low"),
+    }
+    tc_heading = re.compile(r"^((?:EC|ec)-\d+-TC-\d+)$", re.I)
+    lines = text.splitlines()
+    cases: list[dict] = []
+    current_label = "Positive"
+    current_priority = "Medium"
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        m_h = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if m_h:
+            level = len(m_h.group(1))
+            title_part = m_h.group(2).strip()
+            if level == 1:
+                inner = title_part.lower().rstrip(":")
+                matched_sec = False
+                for pattern, (label, priority) in section_map.items():
+                    if re.fullmatch(pattern + r"(\s*:)?", inner, flags=re.I):
+                        current_label, current_priority = label, priority
+                        matched_sec = True
+                        break
+                i += 1
+                continue
+            if level >= 2:
+                m_tc = tc_heading.match(title_part)
+                if m_tc:
+                    tc_id = m_tc.group(1).strip().upper()
+                    i += 1
+                    block_lines: list[str] = []
+                    while i < len(lines):
+                        s2 = lines[i].strip()
+                        if re.match(r"^##\s+(?:EC|ec)-\d+-TC-\d+\s*$", s2):
+                            break
+                        if re.match(r"^#\s+", s2) and not s2.startswith("##"):
+                            break
+                        block_lines.append(lines[i])
+                        i += 1
+                    block = "\n".join(block_lines).strip()
+                    tc = _parse_one_block(block)
+                    tc["testcase_id"] = tc_id
+                    if not (tc.get("description") or "").strip():
+                        tc["description"] = current_label
+                    if tc_id and (tc.get("title") or tc.get("steps")):
+                        cases.append(tc)
+                    continue
+        i += 1
+    return cases
 
 
 def _parse_section_bullet_format(text: str, path: Path) -> list[dict]:
@@ -202,14 +275,15 @@ def _parse_one_block(block: str) -> dict | None:
                     i += 1
                     continue
 
-                # Column 0 "Expected Result:" → summary for whole test case (end Steps section)
+                # Column 0: either per-step "Expected result:" (same line as TestDesigner after "n:" / Action:)
+                # or final "Expected Result:" for the whole test case once `pending` is cleared.
                 if er_m and lead < 1:
-                    if pending:
+                    if pending is not None:
+                        pending["er"] = er_m.group(1).strip()
                         _flush_pending()
-                    if not d["steps"]:
-                        d["expected_result"] = er_m.group(1).strip()
-                    else:
-                        d["expected_result"] = er_m.group(1).strip()
+                        i += 1
+                        continue
+                    d["expected_result"] = er_m.group(1).strip()
                     i += 1
                     break
 
@@ -361,3 +435,43 @@ def sync_testcases_for_tickets(ticket_list: list[str], project_key: str) -> list
         n, err = sync_testcases_to_db(jira_id, project_key=project_key)
         results.append((jira_id, n, err))
     return results
+
+
+def validate_parse_formats() -> list[str]:
+    """
+    Sanity-check that all supported TestCases/*_Testcase.txt layouts parse to non-empty cases
+    when sample files exist under ROOT/TestCases/. Run: python -m testcase_sync
+
+    Returns list of error strings; empty list means OK.
+    """
+    errs: list[str] = []
+    samples = [
+        ("EC-298", "Test Case ID:"),  # Format 1
+        ("EC-334", "## EC-334-TC-"),  # Format 2 markdown headings
+    ]
+    tc_dir = ROOT / "TestCases"
+    for ticket, marker in samples:
+        path = tc_dir / f"{ticket}_Testcase.txt"
+        if not path.is_file():
+            continue
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        if marker not in raw:
+            continue
+        cases = parse_testcase_file(str(path))
+        if not cases:
+            errs.append(f"{path.name}: expected parse via {marker!r}, got 0 cases")
+            continue
+        if any(not c.get("testcase_id") for c in cases):
+            errs.append(f"{path.name}: missing testcase_id on some rows")
+        if any(not (c.get("title") or c.get("steps")) for c in cases):
+            errs.append(f"{path.name}: row missing title and steps")
+    return errs
+
+
+if __name__ == "__main__":
+    problems = validate_parse_formats()
+    if problems:
+        for p in problems:
+            print("FAIL:", p)
+        raise SystemExit(1)
+    print("ok: testcase_sync.parse_testcase_file samples validated")

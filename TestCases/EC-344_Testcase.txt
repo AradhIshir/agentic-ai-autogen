@@ -1,193 +1,57 @@
 APP_URL: https://www.saucedemo.com/
 
+---
+
 Positive Test Cases
 
 Test Case ID: EC-344-TC-001
 Title: Successful Checkout Information Entry
 Test Type: Positive
-Preconditions: User has a valid account with username standard_user and password secret_sauce.
-
+Preconditions: User is already registered on the app
 Steps:
-1:
-  Action: Navigate to the Swag Labs application URL.
-  Expected result: Application loads successfully with the login page displayed; username field, password field, and Login button are visible.
 
-2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
+Step 1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
 
-3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
+Step 2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
 
-4:
-  Action: Click Login button.
-  Expected result: User is redirected to the landing page /inventory.html; product list is visible.
+Step 3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
 
-5:
-  Action: Click Add to Cart for the first product.
-  Expected result: First product is added to the cart successfully.
+Step 4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
 
-6:
-  Action: Click on the Cart icon on the top right-hand side.
-  Expected result: Cart overview page appears, displaying the added product.
+Step 5:
+Action: Click on Add to Cart for the first product.
+Expected result: Selected product is added to the cart.
 
-7:
-  Action: Click Checkout button.
-  Expected result: Checkout info page is displayed with First Name, Last Name, and Zip/Postal Code fields.
+Step 6:
+Action: Click on the Cart icon on the top right-hand side.
+Expected result: Cart page displays items added.
 
-8:
-  Action: Enter "Aradhana" in the First Name field.
-  Expected result: First Name field shows Aradhana.
+Step 7:
+Action: Click on Checkout button.
+Expected result: User navigates to the checkout info page.
 
-9:
-  Action: Enter "Goyal" in the Last Name field.
-  Expected result: Last Name field shows Goyal.
+Step 8:
+Action: Enter First Name - "Aradhana" in the First Name field.
+Expected result: First Name field shows Aradhana.
 
-10:
-  Action: Enter "11111" in the Zip/Postal Code field.
-  Expected result: Zip/Postal Code field shows 11111.
+Step 9:
+Action: Enter Last Name - "Goyal" in the Last Name field.
+Expected result: Last Name field shows Goyal.
 
-11:
-  Action: Click Continue button.
-  Expected result: User proceeds to checkout overview page displaying product details correctly.
+Step 10:
+Action: Enter Zip/Postal Code - "11111" in the Zip/Postal Code field.
+Expected result: Zip/Postal Code field shows 11111.
 
-Expected Result: User successfully enters checkout information and proceeds to the checkout overview page displaying the correct product information.
+Step 11:
+Action: Click Continue button.
+Expected result: User is redirected to checkout overview page with items displayed.
 
-Negative Test Cases
-
-Test Case ID: EC-344-TC-002
-Title: Unsuccessful Checkout Information Entry with Missing Fields
-Test Type: Negative
-Preconditions: User has a valid account with username standard_user and password secret_sauce.
-
-Steps:
-1:
-  Action: Navigate to the Swag Labs application URL.
-  Expected result: Application loads successfully with the login page displayed; username field, password field, and Login button are visible.
-
-2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
-
-3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
-
-4:
-  Action: Click Login button.
-  Expected result: User is redirected to the landing page /inventory.html; product list is visible.
-
-5:
-  Action: Click Add to Cart for the first product.
-  Expected result: First product is added to the cart successfully.
-
-6:
-  Action: Click on the Cart icon on the top right-hand side.
-  Expected result: Cart overview page appears, displaying the added product.
-
-7:
-  Action: Click Checkout button.
-  Expected result: Checkout info page is displayed with First Name, Last Name, and Zip/Postal Code fields.
-
-8:
-  Action: Leave First Name, Last Name, and Zip/Postal Code fields empty.
-  Expected result: Required fields have placeholder or prompt message.
-
-9:
-  Action: Click Continue button.
-  Expected result: Error message is displayed indicating mandatory fields must be filled.
-
-Expected Result: User is unable to proceed to checkout overview page due to missing required fields.
-
-Boundary Test Cases
-
-Test Case ID: EC-344-TC-003
-Title: Borderline Zip/Postal Code Input Validation
-Test Type: Boundary
-Preconditions: User has a valid account with username standard_user and password secret_sauce.
-
-Steps:
-1:
-  Action: Navigate to the Swag Labs application URL.
-  Expected result: Application loads successfully with the login page displayed; username field, password field, and Login button are visible.
-
-2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
-
-3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
-
-4:
-  Action: Click Login button.
-  Expected result: User is redirected to the landing page /inventory.html; product list is visible.
-
-5:
-  Action: Click Add to Cart for the first product.
-  Expected result: First product is added to the cart successfully.
-
-6:
-  Action: Click on the Cart icon on the top right-hand side.
-  Expected result: Cart overview page appears, displaying the added product.
-
-7:
-  Action: Click Checkout button.
-  Expected result: Checkout info page is displayed with First Name, Last Name, and Zip/Postal Code fields.
-
-8:
-  Action: Enter "11110" in the Zip/Postal Code field.
-  Expected result: Zip/Postal Code field shows 11110.
-
-9:
-  Action: Click Continue button.
-  Expected result: Checkout can proceed successfully.
-
-Expected Result: User can enter edge case valid input for Zip/Postal Code field.
-
-Edge Test Cases
-
-Test Case ID: EC-344-TC-004
-Title: Edge Case with Extremely Long Names
-Test Type: Edge
-Preconditions: User has a valid account with username standard_user and password secret_sauce.
-
-Steps:
-1:
-  Action: Navigate to the Swag Labs application URL.
-  Expected result: Application loads successfully with the login page displayed; username field, password field, and Login button are visible.
-
-2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
-
-3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
-
-4:
-  Action: Click Login button.
-  Expected result: User is redirected to the landing page /inventory.html; product list is visible.
-
-5:
-  Action: Click Add to Cart for the first product.
-  Expected result: First product is added to the cart successfully.
-
-6:
-  Action: Click on the Cart icon on the top right-hand side.
-  Expected result: Cart overview page appears, displaying the added product.
-
-7:
-  Action: Click Checkout button.
-  Expected result: Checkout info page is displayed with First Name, Last Name, and Zip/Postal Code fields.
-
-8:
-  Action: Enter a long string exceeding the input limit in the First Name field.
-  Expected result: Input is truncated or error message regarding maximum length appears.
-
-9:
-  Action: Enter a long string exceeding the input limit in the Last Name field.
-  Expected result: Input is truncated or error message regarding maximum length appears.
-
-Expected Result: User receives feedback on maximum length limits for First Name and Last Name fields.
+Expected Result: User successfully enters checkout information and proceeds to checkout overview page.

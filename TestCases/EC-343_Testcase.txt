@@ -1,0 +1,148 @@
+APP_URL: https://www.saucedemo.com/
+
+Positive Test Cases
+
+Test Case ID: EC-343-TC-001
+Title: Successfully Sort Products by Name A to Z
+Test Type: Positive
+Preconditions: User is already registered on the app
+Steps:
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
+
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
+
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
+
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
+
+5:
+Action: Verify that the inventory page displays a sort dropdown with options.
+Expected result: Sort dropdown is visible with options: Name (A to Z), Name (Z to A), Price (low to high), Price (high to low).
+
+6:
+Action: Select "Name (A to Z)" from the sort dropdown.
+Expected result: Product list is re-ordered in ascending order by name.
+
+Expected Result: User successfully sorts products by name A to Z.
+
+Test Case ID: EC-343-TC-002
+Title: Successfully Sort Products by Price Low to High
+Test Type: Positive
+Preconditions: User is already registered on the app
+Steps:
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
+
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
+
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
+
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
+
+5:
+Action: Verify that the inventory page displays a sort dropdown with options.
+Expected result: Sort dropdown is visible with options: Name (A to Z), Name (Z to A), Price (low to high), Price (high to low).
+
+6:
+Action: Select "Price (low to high)" from the sort dropdown.
+Expected result: Product list is re-ordered in ascending order by price.
+
+Expected Result: User successfully sorts products by price low to high.
+
+Negative Test Case
+
+Test Case ID: EC-343-TC-003
+Title: Attempt to Sort without Logging In
+Test Type: Negative
+Preconditions: User is already registered on the app
+Steps:
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
+
+2:
+Action: Click the Login button without entering credentials.
+Expected result: Error message prompts user to enter credentials.
+
+Expected Result: User is prevented from sorting products without logging in.
+
+Boundary Test Case
+
+Test Case ID: EC-343-TC-004
+Title: Check Sorting with Maximum Products
+Test Type: Boundary
+Preconditions: User is already registered on the app
+Steps:
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
+
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
+
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
+
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
+
+5:
+Action: Simulate loading maximum number of products in inventory.
+Expected result: All products are displayed in the inventory.
+
+6:
+Action: Select "Price (low to high)" from the sort dropdown.
+Expected result: All maximum products are sorted correctly by price.
+
+Expected Result: User successfully sorts maximum products in inventory.
+
+Edge Test Case
+
+Test Case ID: EC-343-TC-005
+Title: Verify Sorting with Empty Product List
+Test Type: Edge
+Preconditions: User is already registered on the app
+Steps:
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
+
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
+
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
+
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
+
+5:
+Action: Clear all products from the inventory to simulate an empty list.
+Expected result: Inventory shows no products available.
+
+6:
+Action: Attempt to select an option from the sort dropdown.
+Expected result: Verify that the system handles sorting appropriately with no products available.
+
+Expected Result: User sees a message indicating no products are available to sort.

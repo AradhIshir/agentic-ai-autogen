@@ -1,0 +1,20 @@
+JIRA_BUG_ID: EC-391
+
+Summary: EC-334_Positive: EC-334-TC-001 — Add a product to the cart successfully
+Description:
+Script Name: Script_EC-334.spec.ts
+
+Test Case: Positive: EC-334-TC-001 — Add a product to the cart successfully
+
+Environment: QA
+
+Error Message: Timeout 30000ms exceeded
+
+Steps to Reproduce:
+
+1. Navigate to the relevant application page.
+2. Perform the scenario described in the test case.
+3. Observe the failure described in the error message.
+
+Automation Evidence:
+Failure detected during Playwright automated execution.

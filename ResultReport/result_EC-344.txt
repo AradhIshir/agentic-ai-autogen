@@ -1,6 +1,0 @@
-Total Tests: 1
-Passed Tests: 0
-Failed Tests: 1
-Failed Test Details:
-- Title: Positive: EC-344-TC-001 — Successful Checkout Information Entry
-  Error: TimeoutError: locator.waitFor: Timeout 20000ms exceeded. Call log:  - waiting for getByText('inventory.html').first() to be visible

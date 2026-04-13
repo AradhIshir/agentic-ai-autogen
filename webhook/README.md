@@ -1,4 +1,4 @@
-# ISHIR QA Webhook Server – Setup Guide
+# ISHIR Agentic AI QA Workflow – Webhook Server Setup Guide
 
 ## What it does
 - Listens for Jira webhooks on `POST /jira-webhook`
@@ -90,7 +90,7 @@ https://troublingly-cliquey-gabriel.ngrok-free.dev/jira-webhook
 
    | Field | Value |
    |---|---|
-   | Name | ISHIR QA Platform |
+   | Name | ISHIR Agentic AI QA Workflow |
    | URL | `https://troublingly-cliquey-gabriel.ngrok-free.dev/jira-webhook` |
    | Events | ☑ Issue → updated |
    | JQL Filter | `project = EC AND issuetype = Story` |

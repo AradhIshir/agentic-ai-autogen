@@ -1,121 +1,149 @@
 APP_URL: https://www.saucedemo.com/
 
-Positive Test Case
+---
+
+Positive Test Cases
 
 Test Case ID: EC-334-TC-001
-Title: Add Product to Cart Successfully
+Title: Add a product to the cart successfully
 Test Type: Positive
-Preconditions: User is an authenticated shopper with valid credentials.
+Preconditions: User is already registered on the app
 
 Steps:
 
-Step 1:
-  Action: Navigate to the application URL.
-  Expected result: The login page loads; username field, password field, and Login button are visible.
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
 
-Step 2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
 
-Step 3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
 
-Step 4:
-  Action: Click the Login button.
-  Expected result: User is redirected to the Products (Inventory) page; a list of products with their name, description, price, and Add to Cart button is visible.
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
 
-Step 5:
-  Action: Click the Add to Cart button for a product.
-  Expected result: The selected product is added to the cart; the Add to Cart button changes to Remove, and the Cart icon badge updates with the correct item count.
+5:
+Action: Verify element visibility of product list with names, descriptions, prices, and **Add to Cart** buttons.
+Expected result: User can see all product details with **Add to Cart** buttons.
 
-Step 6:
-  Action: Click on the Cart icon.
-  Expected result: User is navigated to the Cart page showing the added product details (name, price, quantity).
+6:
+Action: Click **Add to Cart** for a specific product.
+Expected result: Selected product is added to the cart; Button changes from **Add to Cart** to **Remove**; Cart icon badge updates with item count.
 
-Expected Result: User successfully adds a product to the cart and verifies it in the Cart page with correct details.
+7:
+Action: Click the Cart icon.
+Expected result: User is navigated to the Cart page; added product(s) are displayed with correct details (name, price, quantity).
 
-Negative Test Case
+8:
+Action: Add 5 products to the cart.
+Expected result: Cart badge count reflects total items added as 5; added product continues to show **Remove** option on returning to Products page.
+
+Expected Result: Product is successfully added to the cart and can be viewed in the Cart.
+
+---
+
+Negative Test Cases
 
 Test Case ID: EC-334-TC-002
-Title: Unable to Add Product When Logged Out
+Title: Attempt to view Cart without adding products
 Test Type: Negative
-Preconditions: User is logged out of the application.
+Preconditions: User is already registered on the app
 
 Steps:
 
-Step 1:
-  Action: Navigate to the application URL.
-  Expected result: The login page loads; username field, password field, and Login button are visible.
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
 
-Step 2:
-  Action: Click the Add to Cart button for any product.
-  Expected result: User is not allowed to add a product; an error message prompts to log in.
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
 
-Expected Result: User cannot add a product to the cart without logging in.
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
 
-Boundary Test Case
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
+
+5:
+Action: Click the Cart icon without adding products.
+Expected result: User is redirected to the Cart page, displaying an empty state.
+
+Expected Result: User sees an empty state in the cart when no products are added.
+
+---
+
+Boundary Test Cases
 
 Test Case ID: EC-334-TC-003
-Title: Add Maximum Products to Cart
+Title: Add maximum products to the cart
 Test Type: Boundary
-Preconditions: User is logged in with valid credentials and at least 5 products are available in stock.
+Preconditions: User is already registered on the app
 
 Steps:
 
-Step 1:
-  Action: Navigate to the application URL.
-  Expected result: The login page loads; username field, password field, and Login button are visible.
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
 
-Step 2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
 
-Step 3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
 
-Step 4:
-  Action: Click the Login button.
-  Expected result: User is redirected to the Products (Inventory) page; a list of products is visible.
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
 
-Step 5:
-  Action: Click Add to Cart for all available products (5).
-  Expected result: All products are added to the cart; the Cart icon badge updates to reflect 5 items.
+5:
+Action: Add 5 products to the cart.
+Expected result: All products are added successfully without any errors.
 
-Step 6:
-  Action: Click on the Cart icon.
-  Expected result: User is navigated to the Cart page showing 5 added product details.
+Expected Result: User can add 5 products to the cart successfully, as the limit is met.
 
-Expected Result: User can successfully add maximum available products (5) to the cart and verify all items in the Cart page.
+---
 
-Edge Test Case
+Edge Test Cases
 
 Test Case ID: EC-334-TC-004
-Title: No Products in Cart
+Title: Adding and removing products in cart
 Test Type: Edge
-Preconditions: User is logged in and has not added any products to the cart.
+Preconditions: User is already registered on the app
 
 Steps:
 
-Step 1:
-  Action: Navigate to the application URL.
-  Expected result: The login page loads; username field, password field, and Login button are visible.
+1:
+Action: Navigate to the application URL.
+Expected result: Login page loads; username field, password field, and Login button are visible.
 
-Step 2:
-  Action: Enter "standard_user" in the Username field.
-  Expected result: Username field shows standard_user.
+2:
+Action: Enter "standard_user" in the Username field.
+Expected result: Username field shows standard_user.
 
-Step 3:
-  Action: Enter "secret_sauce" in the Password field.
-  Expected result: Password field holds the value (masked).
+3:
+Action: Enter "secret_sauce" in the Password field.
+Expected result: Password field holds the value (masked).
 
-Step 4:
-  Action: Click the Login button.
-  Expected result: User is redirected to the Products (Inventory) page; none of the products are added to the cart.
+4:
+Action: Click the Login button.
+Expected result: User is redirected to the inventory page.
 
-Step 5:
-  Action: Click on the Cart icon.
-  Expected result: User is navigated to the Cart page displaying an empty state.
+5:
+Action: Click **Add to Cart** for a product.
+Expected result: Product is added; button changes to **Remove**.
 
-Expected Result: Cart page displays an empty state when no products are added.
+6:
+Action: Click **Remove** for the same product.
+Expected result: Product is removed from cart; button changes back to **Add to Cart**.
+
+Expected Result: User can add and remove products seamlessly without issue.

@@ -13,6 +13,38 @@ log = logging.getLogger("db_sync")
 # Project root = directory containing this file
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+
+def _sanitize_json_text_for_parse(text: str) -> str:
+    """Remove ASCII C0 controls (except tab/LF/CR) that break json.loads — e.g. raw ANSI in error_message."""
+    return "".join(ch for ch in text if ord(ch) >= 32 or ch in "\t\n\r")
+
+
+def load_execution_json(exec_path: Path | str) -> dict | None:
+    """
+    Load ResultReport/execution_<id>.json.
+    ExecutionAgent sometimes embeds raw terminal/ANSI bytes in error_message; strip them, parse, and
+    rewrite the file as valid JSON when we had to sanitize (so browsers and tools can parse it).
+    """
+    p = Path(exec_path)
+    if not p.is_file():
+        return None
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = _sanitize_json_text_for_parse(raw)
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            log.error("Invalid execution JSON (even after sanitizing controls): %s — %s", p, e)
+            return None
+        try:
+            p.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+            log.info("Rewrote sanitized execution JSON: %s", p)
+        except OSError as w:
+            log.warning("Could not rewrite sanitized execution JSON %s: %s", p, w)
+        return data
+
 try:
     from testcase_sync import sync_testcases_to_db as _sync_tc_fn  # type: ignore
     from db import get_connection as _db_conn                        # type: ignore
@@ -116,13 +148,19 @@ def db_sync_execution(ticket_id: str) -> None:
         if not exec_path.is_file():
             log.warning("Execution JSON not found: %s – skipping execution sync", exec_path)
             return
-        data = json.loads(exec_path.read_text(encoding="utf-8"))
+        data = load_execution_json(exec_path)
+        if data is None:
+            log.warning("Could not parse execution JSON: %s – skipping execution sync", exec_path)
+            return
         failed_details = data.get("failed_test_details", [])
         failed_titles: list[str] = [d.get("title", "").lower() for d in failed_details]
         failed_title_original: list[str] = [d.get("title", "") for d in failed_details]
         failed_errors: dict[str, str] = {d.get("title", "").lower(): d.get("error_message", "") for d in failed_details}
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        report_ref = f"ResultReport/execution_{ticket_id}.json"
+        report_ref = (
+            f"ResultReport/execution_{ticket_id}.json; "
+            f"ResultReport/result_{ticket_id}.txt"
+        )
         with _db_conn() as conn:
             cur = conn.execute("SELECT testcase_id, title FROM test_cases WHERE jira_id = ?", (ticket_id,))
             tc_rows = [(r[0], r[1] or "") for r in cur.fetchall()]
